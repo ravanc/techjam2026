@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Instruments / Metal captures - hundreds of MB each
+profiling/traces/
+profiling/*.dylib

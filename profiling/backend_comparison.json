@@ -1,0 +1,66 @@
+{
+  "config": {
+    "batch_size": 8,
+    "seq_len": 128,
+    "d_model": 512,
+    "num_heads": 8,
+    "ffn_dim": 2048,
+    "num_layers": 6,
+    "causal": false
+  },
+  "dtype": "torch.float32",
+  "torch_version": "2.13.0",
+  "backends": {
+    "cpu": {
+      "label": "torch baseline on cpu",
+      "accuracy": {
+        "passed": true,
+        "max_abs_error": 0.0,
+        "max_relative_error": 0.0,
+        "failed_elements": 0,
+        "total_elements": 2621440
+      },
+      "timing_ms": {
+        "median": 91.7238335,
+        "mean": 94.30544601333334,
+        "p90": 106.11776670000002,
+        "min": 77.395791,
+        "samples": 300
+      }
+    },
+    "mps": {
+      "label": "torch baseline on mps",
+      "accuracy": {
+        "passed": true,
+        "max_abs_error": 2.5033950805664062e-06,
+        "max_relative_error": 0.44021737575531006,
+        "failed_elements": 0,
+        "total_elements": 2621440
+      },
+      "timing_ms": {
+        "median": 20.08375,
+        "mean": 20.656867886666667,
+        "p90": 21.7158544,
+        "min": 19.09125,
+        "samples": 300
+      }
+    },
+    "mlx": {
+      "label": "mlx (torch tensors on cpu)",
+      "accuracy": {
+        "passed": true,
+        "max_abs_error": 2.9802322387695312e-06,
+        "max_relative_error": 2.696969747543335,
+        "failed_elements": 0,
+        "total_elements": 2621440
+      },
+      "timing_ms": {
+        "median": 15.299812,
+        "mean": 17.201152933333333,
+        "p90": 19.2316295,
+        "min": 13.328125,
+        "samples": 300
+      }
+    }
+  }
+}
