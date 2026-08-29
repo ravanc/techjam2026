@@ -1,4 +1,18 @@
-Use ASD-STE100 in your output.
+# Language
+
+Write all output in ASD-STE100 Simplified Technical English. This applies to
+your replies, to the reference files, and to the comments in the code.
+
+1. Use short sentences. Put one idea in each sentence.
+2. Use the active voice. Name the agent of each action.
+3. Use one word for one meaning. Do not use a synonym for variety.
+4. Use a simple tense: present, past or future. Do not use a perfect tense.
+5. Do not put more than three nouns together.
+6. Start an instruction with the verb.
+7. Do not use a metaphor, a joke or a filler phrase.
+
+A technical name keeps its usual form. `mx.fast.scaled_dot_product_attention`,
+`head_dim` and `KernelPlan` are names, not noun clusters.
 
 # Scope of optimization
 
@@ -33,6 +47,40 @@ that are costly to derive again.
 
 Keep them current. When you measure something that one of these files states,
 and your result disagrees, correct the file in the same change.
+
+# The source of truth table
+
+`OPTIMIZATIONS.md` starts with a **source of truth** table. It is the only
+place that states the status of an optimization. Read it before you try an
+optimization, and before you describe the model to anybody.
+
+One row for each optimization, with these columns:
+
+| Column | Meaning |
+|---|---|
+| **#** | The row number. The detail section uses the same number. |
+| **Optimization** | What it does, in one line. |
+| **Status** | `KEPT`, `REVERTED`, `RULED OUT` or `OPEN`. |
+| **Lives in** | The function and line that holds it, or `—` if it is not in the code. |
+| **Applies where** | The shapes or the conditions that use it. `—` if none. |
+| **Measured effect** | The number that decided the status. |
+
+Status:
+
+- **KEPT** — it is in `UserOptimizedTransformer` now.
+- **REVERTED** — it was measured, and it lost. Do not try it again.
+- **RULED OUT** — it is out of scope, or it cannot pass.
+- **OPEN** — it is not tried yet.
+
+Rules:
+
+1. Update the table in the same change that adds, keeps or reverts an
+   optimization. A change that does not touch the table is not complete.
+2. Give every row a detail section below, with the measurement.
+3. The table wins. If a section disagrees with the table, correct the
+   table, then correct the section.
+4. Do not delete a row. A `REVERTED` row stops repeated work.
+5. Check the "Lives in" line numbers when you move code.
 
 # Rules for a measurement
 
