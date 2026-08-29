@@ -20,22 +20,22 @@ Status:
 
 | # | Optimization | Status | Lives in | Applies where | Measured effect |
 |---:|---|---|---|---|---|
-| 1 | MLX behind the torch interface | **KEPT** | `_mlx_transformer()` L349, `UserOptimizedTransformer` L433 | every shape | 4.4x to 7.4x against torch CPU. float32 PASS |
-| 2 | `mx.compile` on the forward pass | **KEPT** | `make_call()` L535 | every shape | 14.203 ms to 13.401 ms (6%) |
-| 3 | float32 LayerNorm accumulation | **KEPT** | `norm()` L380, weight build L474 | every shape | no measured gain. Correct policy. Free |
+| 1 | MLX behind the torch interface | **KEPT** | `_mlx_transformer()` L512, `UserOptimizedTransformer` L620 | every shape | 4.4x to 7.4x against torch CPU. float32 PASS |
+| 2 | `mx.compile` on the forward pass | **KEPT** | `make_call()` L745 | every shape | 14.203 ms to 13.401 ms (6%) |
+| 3 | float32 LayerNorm accumulation | **KEPT** | `norm()` L543, weight build L687 | every shape | no measured gain. Correct policy. Free |
 | 4 | Explicit float32 softmax, not fused | **REVERTED** | — | — | float16 49 to 50 failures. No gain. More code |
 | 5 | `torch.compile` over the MLX class | **RULED OUT** | — | — | crash. Dynamo cannot trace an MLX object |
-| 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L391 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
-| 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L272 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
-| 8 | Blocked causal attention | **KEPT** | `_attention()` L457 | causal, effective `head_dim < 64`, and not on the steel path. **No appendix shape selects it now** | 1.63x at seq 1024, bit exact, when it was the best option. It works around the FALLBACK kernel. Row 25 removes the fallback instead, so every shape that used to block now takes the steel kernel. The code stays for a shape row 25 cannot take |
-| 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L524, use L411 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
-| 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L568 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
+| 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L557 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
+| 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L343 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
+| 8 | Blocked causal attention | **KEPT** | `_attention()` L459 | causal, effective `head_dim < 64`, and not on the steel path. **No appendix shape selects it now** | 1.63x at seq 1024, bit exact, when it was the best option. It works around the FALLBACK kernel. Row 25 removes the fallback instead, so every shape that used to block now takes the steel kernel. The code stays for a shape row 25 cannot take |
+| 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L738, use L580 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
+| 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L778 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
 | 11 | Pad `head_dim` from 8 up to 32 | **REVERTED** | — | — | 0.91x at shape 7. Blocking beats it. Wrong target: 32 is still the fallback kernel. See row 17 |
 | 12 | Full port of the file to MLX | **RULED OUT** | — | — | out of scope. The baseline does not change |
 | 13 | float16 and bfloat16 accuracy | **RULED OUT** | — | — | no implementation can pass. torch `F.sdpa` fails too |
 | 14 | Hand-written Metal kernel for `head_dim = 8` | **KEPT**, as row 25 | `steel_attention.py` | shapes 7 and 11 | done without writing new arithmetic: row 25 compiles Apple's own kernel at `head_dim = 8`. Shape 11 **2.19x**, shape 7 1.48x |
-| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L425 | **nothing now.** Row 25 wins wherever the pad applied, and `plan_kernels()` prefers it | 1.646x at shape 13 when it was the best option. Row 25 gives shape 13 **2.14x over the padded path** at the attention step, with no widened projection. The pad stays in the code for a shape the steel kernel cannot take |
-| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L268 | `head_dim` in {64, 72, 80, 96, 128} gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S1024: 16 MiB fused against 264 MiB fallback. **The set is NOT the range 64..128.** See row 20 |
+| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L433 | **nothing now.** Row 25 wins wherever the pad applied, and `plan_kernels()` prefers it | 1.646x at shape 13 when it was the best option. Row 25 gives shape 13 **2.14x over the padded path** at the attention step, with no widened projection. The pad stays in the code for a shape the steel kernel cannot take |
+| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L320 | `head_dim` in {64, 72, 80, 96, 128} gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S1024: 16 MiB fused against 264 MiB fallback. **The set is NOT the range 64..128.** See row 20 |
 | 19 | Sweep `seq_len` to place the `S >= 4*D` threshold | **OPEN** | — | `head_dim` 32..48 | not measured at the model level. Row 20 measures the crossover at the attention kernel alone |
 | 20 | The fused SDPA set is discrete, not a range | **KEPT** (a fact, not a change) | `profiling/sdpa_dispatch.py` | `head_dim` 1..288, every mask kind, every dtype, `S` 512 and 1024, `B*H` 1 to 256 | the set is {64, 72, 80, 96, 128}. 65, 100 and 127 fall back. Always pad to the SMALLEST member at or above `head_dim`: a larger target lost all 44 rows |
 | 21 | MLX never calls its own `bd192` and `bd256` kernels | **OPEN** (an MLX gap) | — | shape 8, `head_dim=256`, 21.3% of the FLOP-weighted score | the metallib holds `steel_attention_*_bd192_*` and `*_bd256_*` for all 3 dtypes. All 32 dispatch combinations tried take the fallback. No Python workaround: `head_dim` cannot pad down and a head cannot split. Recheck after an MLX upgrade |
@@ -43,8 +43,12 @@ Status:
 | 23 | Return the output as a view of MLX memory, not a copy | **KEPT** | `_to_torch()` L188 | every shape. float32 and float16 alias. bfloat16 and a device change still copy | **71.6 ms of 1590.2 ms at shape 6 (1.047x)**. 1.5 ms of 136 ms at shape 8. Bit exact by `torch.equal` |
 | 15 | Fused FFN | **OPEN** | — | every shape | not measured. Check `mx.compile` first |
 | 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
-| 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L477, gated at `plan_kernels()` L417 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
+| 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L479, gated at `plan_kernels()` L419 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
 | 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **OPEN** | — | shape 8, 21.3% of the FLOP weight | not measured. `bq32_bk32_bd256` needs 68.5 KiB of threadgroup memory against a 32 KiB limit, and `bk16` still needs 41 KiB. `bk8` would fit. Shape 8 is only 7.6% attention, so the ceiling is small |
+| 27 | Gate the steel kernel on a string mask | **KEPT** (a bug fix) | `_attention()` L479 | every padded batch on a shape that selects the steel kernel | a padded causal batch went **FAIL** (822894/1048576 elements wrong) to **PASS** (`max_abs=3.04e-06`). No sweep saw the bug: `--padding-ratio` defaults to 0.0 everywhere. `test_padding.py` now covers it |
+| 28 | Drop the token masks that cannot change the output | **KEPT** | `_mlx_transformer()` L570, L611, L617 | every shape. The unpadded graph now holds no mask operation | bit exact on 18 cases (`test_padding.py`). **1.048x FLOP-weighted** (MLX 841.6 ms to 803.2 ms). Shape 6 1.050x. MPS held at 1.010x and CPU at 1.005x on the same sweep, so the noise floor is about 1% |
+| 29 | `mx.addmm` for every projection, in place of `h @ w + b` | **KEPT** | `_mlx_transformer()` L587-L616 | every shape. Always on | **1.096x FLOP-weighted** (MLX 803.2 ms to 732.6 ms). Shape 6 1.099x, shape 8 1.040x, shape 13 1.092x. Bit exact in float32 on 16 cases |
+| 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -658,6 +662,7 @@ this.
 | Tool | Use |
 |---|---|
 | `test_backends.py` | The three backends, side by side. Writes the JSON above. |
+| `test_padding.py` | The padded batch. The sweep never runs one. Rows 27 and 28. |
 | `appendix_cases.py` | The Appendix 3.7 shapes. `--cases 1,7-9 --run`. |
 | `profiling/` | Instruments traces and Metal GPU captures. See its README. |
 
@@ -770,7 +775,8 @@ against MPS the gain is **1.60x to 2.12x FLOP-weighted**.
 Limits:
 
 1. The kernel takes a string causal mask only. A padded batch keeps the old
-   path. This is a correctness gate.
+   path. This is a correctness gate. **The first version of row 25 stated
+   this rule but never applied it.** Row 27 applies it.
 2. `head_dim` must be a multiple of 8.
 3. Q plus K threadgroup memory must fit 32 KiB, which caps `head_dim` at 96
    with `BQ=32, BK=32`. See row 26.
@@ -788,3 +794,238 @@ tried.
 4% the FLOP table implies, because `d_model=1024` makes the projections 92%
 of the work. A perfect attention kernel would give about 1.5% of the
 weighted score.
+
+## 27. Gate the steel kernel on a string mask — a bug fix
+
+`plan_kernels()` sets `steel` from the shape alone. The shape does not say if
+a batch has padding, so `plan.steel_attention` stayed True for a padded
+batch. `_attention()` then ran:
+
+```python
+return steel_sdpa(q, k, v, scale, causal=mask == "causal")
+```
+
+`mask` is an `mx.array` for a padded batch. `mx.array == "causal"` returns
+the Python `False`, not an array:
+
+```
+>>> mx.ones((2, 2), dtype=mx.bool_) == "causal"
+False
+```
+
+So the kernel dropped the token mask **and** the causal mask, for the whole
+batch. Every sample lost its causal mask, not only the padded samples.
+
+Reproduce the failure on the parent commit:
+
+    .venv/bin/python3 torch_transformer_benchmark.py --causal --heads 16 \
+        --padding-ratio 0.25 --accuracy-trials 2
+    summary: FAIL | max_abs=2.71282 | max_rel=321908 | failed=822894/1048576
+
+The same command after the fix:
+
+    summary: PASS | max_abs=3.03611e-06 | max_rel=2.173 | failed=0/1572864
+
+The fix adds `isinstance(mask, str)` to the steel branch. A padded batch
+takes `mx.fast.scaled_dot_product_attention` with the array mask.
+
+**No recorded sweep saw this.** `--padding-ratio` defaults to 0.0 in
+`torch_transformer_benchmark.py`, in `scoreboard.py` and in
+`appendix_cases.py`, so every number in this log ran on an unpadded batch.
+The padded graph has no coverage in the sweep. Add a padded run when you
+change the mask path.
+
+## 28. Drop the token masks that cannot change the output — KEPT
+
+The baseline applies `masked_fill` three times for each layer: on the
+attention output (L124), at the end of the block (L147), and after the final
+LayerNorm (L174). `_mlx_transformer()` copied all three. Two of them cannot
+change the result.
+
+**The attention output mask is redundant.** Attention is the only operation
+that mixes the positions, and it runs before the mask. LayerNorm, GELU and
+both FFN matmuls act on one position at a time. So a value at a padded
+position never reaches a valid position, and the mask at the end of the
+block removes it. A NaN from a fully masked query row goes the same way:
+`mx.where` selects a value, so it does not spread the NaN.
+
+**All three are no-ops without padding.** `forward()` sets `padded = not
+valid_token_mask.all()`, and `padded` selects a separate compiled graph
+(row 6). Inside the unpadded graph every token is valid, so each
+`mx.where(valid_tokens, y, 0)` returns `y`. The unpadded graph now holds no
+mask operation.
+
+The end-of-block mask stays for a padded batch. It clears the FFN output.
+The final mask stays as well: LayerNorm returns the bias at a zeroed
+position, not zero.
+
+Bit exact. 18 cases, causal and non-causal, `head_dim` 8, 16 and 64, with an
+all-valid mask, a ragged mask, and a mask that empties one whole sample:
+
+    PYTHONPATH=. .venv/bin/python3 <scratchpad>/check_exact.py
+    ALL BIT EXACT
+
+Full sweep, MLX milliseconds, against the sweep at commit `92be893`:
+
+    .venv/bin/python3 scoreboard.py --label "rows 27 and 28, re-measured on AC power"
+
+| # | before | after | gain | FLOP share |
+|---:|---:|---:|---:|---:|
+| 6 | 1211.252 | 1153.598 | **1.050x** | 66.5% |
+| 8 | 134.105 | 133.563 | 1.004x | 21.3% |
+| 13 | 75.603 | 75.672 | 0.999x | 9.4% |
+| 5 | 15.281 | 15.153 | 1.008x | 0.9% |
+| 11 | 7.754 | 7.698 | 1.007x | 0.4% |
+| 1 | 7.670 | 7.594 | 1.010x | 0.4% |
+| 9 | 6.819 | 6.869 | 0.993x | 0.4% |
+| 10 | 6.728 | 6.705 | 1.003x | 0.4% |
+| 7 | 4.742 | 4.784 | 0.991x | 0.0% |
+| 4 | 2.197 | 2.149 | 1.022x | 0.1% |
+| 12 | 2.146 | 2.139 | 1.003x | 0.1% |
+| 3 | 0.977 | 0.976 | 1.001x | 0.0% |
+| 2 | 0.635 | 0.618 | 1.028x | 0.0% |
+
+**FLOP-weighted MLX: 841.6 ms to 803.2 ms, which is 1.048x.**
+
+The two reference backends held still across the same pair of sweeps, so the
+noise floor is about 1% and the MLX gain sits above it:
+
+| Backend | before | after | ratio |
+|---|---:|---:|---:|
+| MLX | 841.6 ms | 803.2 ms | **1.048x** |
+| MPS | 1868.8 ms | 1850.9 ms | 1.010x |
+| CPU | 9552.6 ms | 9600.6 ms | 1.005x |
+
+Shape 6 carries the gain, at 1.050x and 66.5% of the FLOP weight. That fits
+the change. Shape 6 is B=10000 and it runs in chunks of 1024, so it moves
+more activation bytes than any other shape, and this change removes one
+elementwise pass over `B x S x D` for each layer. Shape 8 gains almost
+nothing (1.004x), which also fits: `d_model=1024` makes the projections 92%
+of its work.
+
+`mx.compile` joins each removed `mx.where` with the add beside it, so the
+change removes arithmetic and one input, not a kernel launch. Only the final
+mask is a kernel of its own.
+
+**Measure this on AC power.** The first sweep of this change ran on battery.
+The CPU baseline came out 1.9x slow, MPS 6% slow, and MLX 2% fast, which
+gave a useless comparison. That reading stays in `profiling/history.jsonl`
+with the label `rows 27 and 28, ON BATTERY`. Do not compare against it.
+
+Accuracy on the sweep: PASS on all 13 shapes, `max_abs` 1.07e-06 to
+2.65e-06.
+
+## 29. `mx.addmm` for every projection — KEPT
+
+`_mlx_transformer()` wrote each projection as `h @ w + b`. MLX runs that as
+two kernels: the matmul writes the output to DRAM, and the add reads the
+whole output back, adds the bias, and writes it again.
+
+`mx.addmm(b, h, w)` gives the bias to the matmul as its C operand, so the
+GPU adds it inside the matmul kernel. One kernel replaces two, and one full
+pass over the output disappears.
+
+**`mx.compile` does not do this.** That was the surprise. The compiled graph
+keeps the add as its own kernel, and the compiled time equals the raw time:
+
+    .venv/bin/python3 <scratchpad>/addmm_micro.py
+
+| Projection | `h @ w + b` raw | compiled | `mx.addmm` raw | compiled |
+|---|---:|---:|---:|---:|
+| B64 S128 D128->384 (shape 1) | 0.766 ms | 0.778 ms | 0.645 ms | 0.688 ms |
+| B1024 S128 D128->384 (shape 6 chunk) | 6.768 ms | 6.753 ms | **3.749 ms** | 3.742 ms |
+| B64 S1024 D128->384 (shape 13) | 3.503 ms | 3.507 ms | **1.998 ms** | 1.997 ms |
+| B64 S128 D1024->3072 (shape 8) | 14.327 ms | 14.218 ms | 12.725 ms | 12.704 ms |
+
+The gain follows the output size, because the kernel that disappears is
+memory-bound. Shape 8 gains least: its matmul is arithmetic-bound, so the
+extra pass costs a smaller share.
+
+Seven call sites changed: the fused QKV, the three unfused QKV projections,
+the attention output, and both FFN matmuls.
+
+Full sweep, MLX milliseconds, against the sweep at the same commit:
+
+    .venv/bin/python3 scoreboard.py --label "row 29: mx.addmm for every projection"
+
+| # | before | after | gain | FLOP share |
+|---:|---:|---:|---:|---:|
+| 6 | 1153.598 | 1050.066 | **1.099x** | 66.5% |
+| 8 | 133.563 | 128.463 | 1.040x | 21.3% |
+| 13 | 75.672 | 69.288 | **1.092x** | 9.4% |
+| 5 | 15.153 | 13.571 | 1.117x | 0.9% |
+| 11 | 7.698 | 7.061 | 1.090x | 0.4% |
+| 1 | 7.594 | 6.889 | 1.102x | 0.4% |
+| 9 | 6.869 | 6.268 | 1.096x | 0.4% |
+| 10 | 6.705 | 6.151 | 1.090x | 0.4% |
+| 7 | 4.784 | 4.761 | 1.005x | 0.0% |
+| 4 | 2.149 | 2.091 | 1.028x | 0.1% |
+| 12 | 2.139 | 2.007 | 1.066x | 0.1% |
+| 3 | 0.976 | 0.956 | 1.021x | 0.0% |
+| 2 | 0.618 | 0.748 | 0.827x | 0.0% |
+
+**FLOP-weighted MLX: 803.2 ms to 732.6 ms, which is 1.096x.**
+
+Shape 2 is the one row that moved backward. It runs one sample in 0.7 ms,
+where a kernel launch is most of the time, and a paired test of the same two
+builds gave 1.004x for it. Treat the sweep row as noise, not as a
+regression.
+
+The two reference backends held still across the pair of sweeps, so the
+noise floor is about 1% to 2%:
+
+| Backend | before | after | ratio |
+|---|---:|---:|---:|
+| MLX | 803.2 ms | 732.6 ms | **1.096x** |
+| MPS | 1850.9 ms | 1872.1 ms | 0.989x |
+| CPU | 9600.6 ms | 9388.9 ms | 1.023x |
+
+A paired test confirms the sweep. It alternates the two builds inside one
+process, one call each, 30 rounds, so a drift of the machine hits both:
+
+    .venv/bin/python3 <scratchpad>/ab_paired.py 6,8 10
+
+| # | 6 | 8 | 13 | 1 | 11 | 5 | 9 | 10 | 12 | 7 | 2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| gain | 1.118x | 1.049x | 1.089x | 1.108x | 1.120x | 1.120x | 1.105x | 1.098x | 1.046x | 1.013x | 1.004x |
+
+**Accuracy.** All 13 shapes PASS, `max_abs` 1.31e-06 to 1.91e-06. The output
+is bit exact against the build before this change, on 16 float32 cases:
+shapes 1, 2, 7, 8, 9, 11, 12 and 13, each with `--padding-ratio` 0.0 and
+0.3, every one `max_abs=0.0`.
+
+float16 is **not** bit exact: shape 8 differs by 7.81e-03, which is one
+float16 step at that magnitude. The bias enters the sum at a different point
+in the kernel, so half precision rounds differently. Row 13 rules out
+float16 anyway.
+
+## 30. Flatten the block to rank 2 before each projection — REVERTED
+
+The idea copies a known torch pattern. `F.linear` on a `[B, S, D]` input
+takes a rank 3 path, so a caller flattens to `[B*S, D]` first and calls
+`torch.addmm`, which gives one large GEMM in place of a batched call.
+
+MLX does not need it. MLX collapses the leading dimensions of a rank 3 by
+rank 2 matmul into one GEMM already, so the flatten removes nothing.
+
+Paired measurement, both forms alternating inside one process, 200 rounds
+each, on an idle machine:
+
+    .venv/bin/python3 <scratchpad>/rank_paired.py
+
+| Projection | rank 3 `mx.addmm` | rank 2 `mx.addmm` | gain |
+|---|---:|---:|---:|
+| B64 S128 D128->384 (shape 1) | 0.457 ms | 0.461 ms | 0.992x |
+| B1024 S128 D128->384 (shape 6 chunk) | 3.728 ms | 3.727 ms | 1.000x |
+| B64 S1024 D128->384 (shape 13) | 1.992 ms | 1.994 ms | 0.999x |
+| B64 S128 D1024->3072 (shape 8) | 12.717 ms | 12.717 ms | 1.000x |
+
+An unpaired run of the same test, taken while a `scoreboard.py` sweep held
+the GPU, gave 1.42x on one row and 0.79x on another. That reading was noise.
+It is the reason measurement rule 1 exists.
+
+The rank 2 form also costs code. Attention needs `[B, S, H, head_dim]`, so a
+rank 2 block must reshape into attention and out of it, and `valid_tokens`
+changes shape as well. It buys nothing. Do not try it again.
+
+Row 29 keeps the `mx.addmm`, at rank 3.

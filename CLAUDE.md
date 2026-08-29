@@ -84,13 +84,22 @@ Rules:
 
 # Rules for a measurement
 
-1. Run with `.venv/bin/python3`. Never use the system interpreter.
-2. Call `mx.synchronize()` after `mx.eval()`. `mx.eval()` alone times the
+1. Look for a running measurement before you start one. Two runs share one
+   GPU, and each one makes the other reading false. Run this command first:
+
+       ps -Ao pid,etime,%cpu,command | grep "[.]venv/bin/python3" | grep -v shell-snapshots
+
+   If the command prints a process, wait for that process to end. Do not
+   start a second run beside it, and do not trust a number that you took
+   beside it. Measured: shape 12 gave 2.591 ms and 5.021 ms in two runs of
+   one script, while a `scoreboard.py` sweep held the GPU at 228% CPU.
+2. Run with `.venv/bin/python3`. Never use the system interpreter.
+3. Call `mx.synchronize()` after `mx.eval()`. `mx.eval()` alone times the
    CPU graph build, not the GPU.
-3. Use the default `--repeats`. A short run gives a false median: `--repeats
+4. Use the default `--repeats`. A short run gives a false median: `--repeats
    3` gave 7.198x where 100 repeats gave 4.590x on the same build.
-4. Give the command that produced a number, next to the number.
-5. Record a failure as well as a success. A recorded failure stops repeated
+5. Give the command that produced a number, next to the number.
+6. Record a failure as well as a success. A recorded failure stops repeated
    work.
 
 # What a test run must report

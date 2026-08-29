@@ -413,7 +413,9 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     # head_dim, so it needs no pad and no blocking. Prefer it wherever it
     # runs: it removes the S x S score matrix without widening any matmul.
     # It supports a string causal mask only, so a padded batch keeps the
-    # old path. See OPTIMIZATIONS.md row 23.
+    # old path. `_attention()` applies that rule, because the shape alone
+    # does not tell this function if the batch has padding. See
+    # OPTIMIZATIONS.md rows 25 and 27.
     use_steel = (
         config.causal
         and head_dim not in SDPA_FUSED_HEAD_DIMS
@@ -474,10 +476,15 @@ def _attention(
     block of length `stop - start` against keys `[0, stop)` gets exactly the
     rows it needs. Verified bit exact against the unblocked call.
     """
-    if steel:
+    if steel and isinstance(mask, str):
         # MLX's own fused kernel, compiled at a head_dim that MLX does not
         # ship. It handles the causal mask itself, so it never blocks. See
         # `steel_attention.py`.
+        #
+        # The kernel takes a string mask only. A padded batch gives an array
+        # mask, and this test sends that batch to the SDPA call below. Do not
+        # remove the test: `plan_kernels()` sets `steel` from the shape, and
+        # the shape does not tell it if the batch has padding.
         return steel_sdpa(q, k, v, scale, causal=mask == "causal")
 
     if block is None:
@@ -557,24 +564,33 @@ def _mlx_transformer(
     else:
         mask = "causal" if causal else None
 
-    valid_tokens = valid_mask[..., None]
+    # The token mask. It clears the padded positions. It is necessary only
+    # when the batch has padding, and `padded` is a compile-time flag, so the
+    # unpadded graph holds no mask operation at all.
+    valid_tokens = valid_mask[..., None] if padded else None
 
     def heads(projection: mx.array, last: int = width) -> mx.array:
         return projection.reshape(
             batch, seq_len, num_heads, last
         ).transpose(0, 2, 1, 3)
 
+    # Every projection uses `mx.addmm`, not `h @ w + b`. `mx.addmm` gives the
+    # bias to the matmul as its C operand, so the GPU adds it inside the
+    # matmul kernel. `h @ w + b` starts a second kernel, which reads and
+    # writes the whole output again. `mx.compile` does NOT fuse that add.
+    # Measured on the qkv projection alone: 6.768 ms to 3.749 ms at the
+    # shape 6 dimensions. See OPTIMIZATIONS.md row 29.
     for layer in layers:
         h = norm(x, layer["n1w"], layer["n1b"])
 
         if plan.fuse_qkv:
-            fused = h @ layer["qkvw"] + layer["qkvb"]
+            fused = mx.addmm(layer["qkvb"], h, layer["qkvw"])
             q, k, v = (heads(part) for part in mx.split(fused, 3, axis=-1))
         else:
             # The unfused path never pads, so it uses the true head width.
-            q = heads(h @ layer["qw"].T + layer["qb"], head_dim)
-            k = heads(h @ layer["kw"].T + layer["kb"], head_dim)
-            v = heads(h @ layer["vw"].T + layer["vb"], head_dim)
+            q = heads(mx.addmm(layer["qb"], h, layer["qw"].T), head_dim)
+            k = heads(mx.addmm(layer["kb"], h, layer["kw"].T), head_dim)
+            v = heads(mx.addmm(layer["vb"], h, layer["vw"].T), head_dim)
 
         # An explicit float32 softmax gave no accuracy gain here. Measured.
         context = _attention(
@@ -584,16 +600,27 @@ def _mlx_transformer(
             # Drop the zero lanes that the padded projection produced.
             context = context[..., :head_dim]
         context = context.transpose(0, 2, 1, 3).reshape(batch, seq_len, d_model)
-        attention = context @ layer["ow"].T + layer["ob"]
-        x = x + mx.where(valid_tokens, attention, 0)
+        attention = mx.addmm(layer["ob"], context, layer["ow"].T)
+        # The baseline clears the padded rows of the attention output here.
+        # This code does not, and the output stays bit exact. Attention is
+        # the only operation that mixes the positions, and it runs above this
+        # line. Every operation from here to the end of the block acts on one
+        # position at a time, so a value at a padded position never reaches a
+        # valid position. The mask at the end of the block removes it. A NaN
+        # from a fully masked query row goes the same way, because `mx.where`
+        # selects a value and does not calculate one.
+        x = x + attention
 
         h = norm(x, layer["n2w"], layer["n2b"])
-        h = mlx_nn.gelu(h @ layer["fiw"].T + layer["fib"])
-        x = x + (h @ layer["fow"].T + layer["fob"])
-        x = mx.where(valid_tokens, x, 0)
+        h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
+        x = x + mx.addmm(layer["fob"], h, layer["fow"].T)
+        if padded:
+            x = mx.where(valid_tokens, x, 0)
 
     x = norm(x, final_weight, final_bias)
-    return mx.where(valid_tokens, x, 0)
+    # The final LayerNorm returns the bias at a zeroed position, not zero,
+    # so this mask stays.
+    return mx.where(valid_tokens, x, 0) if padded else x
 
 
 class UserOptimizedTransformer(BaselineTransformer):

@@ -378,6 +378,17 @@ the table.
   argument.** A branch that changes the graph must produce a separate
   compiled variant. The code compiles one variant for the padded mask and
   one for the unpadded mask.
+- **`mx.compile` does not fuse a bias add into a matmul.** `h @ w + b`
+  starts a second kernel, which reads and writes the whole output again.
+  `mx.addmm(b, h, w)` gives the bias to the matmul as its C operand, and the
+  GPU adds it inside the matmul kernel. Measured on one projection at the
+  shape 6 dimensions: 6.768 ms to 3.749 ms, and the compiled times match the
+  raw times. It gave 1.096x FLOP-weighted over the whole model. See
+  `OPTIMIZATIONS.md` row 29.
+- **A rank 3 by rank 2 matmul needs no flatten.** MLX collapses the leading
+  dimensions into one GEMM already. `[B, S, D] @ [D, O]` and
+  `[B*S, D] @ [D, O]` measured 0.992x to 1.000x of each other on four sizes.
+  See `OPTIMIZATIONS.md` row 30.
 - **`torch.compile` cannot wrap an MLX class.** It raises
   `TypeError: cannot create weak reference to 'mlx.gc_func' object`. Use
   `mx.compile` inside the class. See `OPTIMIZATIONS.md`, attempt 5.
