@@ -53,6 +53,9 @@ Status:
 | 32 | Give the attention kernel contiguous q, k and v | **REVERTED** | — | — | 1.02x, inside the noise floor: the `mx.contiguous` costs 3.29 ms and saves 3.41 ms. **Row 34 supersedes it and inverts it.** The 3.41 ms was never the read pattern. It was a hidden copy that `ensure_row_contiguous=True` ran inside the kernel launch. Do not make q, k and v contiguous. Tell the kernel their strides. This row also mislabelled its own measurement: see the detail section |
 | 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. **The steel GEMM header exposes an epilogue hook**, so the row 25 hoisting trick can probably reach it. See the detail section |
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
+| 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
+| 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
+| 37 | A wide `fast_layernorm` variant, so shape 8 reaches row 36 | **OPEN** | — | shape 8 only (`d_model` 1024), 21.3% of the FLOP weight | not tried. Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.4 ms of the 32.1 ms layer, or 4.4%**, so about **0.9% FLOP-weighted**. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -1483,3 +1486,233 @@ over `head_dim` 8 and 32, `S` 96, 100, 128 and 256, causal and not causal. The
 strided path and the contiguous path agree **bit exact** (`max_abs = 0.0`),
 and both sit 5.4e-07 to 1.3e-06 from SDPA. `S = 100` covers the ragged case,
 where `S` is not a multiple of the 32-row query block.
+
+## 35. Fuse the residual add into the LayerNorm kernel — RULED OUT
+
+**Superseded by row 36. This kernel was never built.** Row 36 removed the
+residual add by a different route, so nothing is left here to fuse. The
+measurement below still stands, and it is what led to row 36. Read it for the
+byte accounting, not for a plan.
+
+The block runs this pair twice:
+
+```python
+x1 = x + attn_out              # one kernel
+h2 = norm(x1, n2w, n2b, EPS)   # a second kernel
+```
+
+The add writes `x1` to DRAM. The LayerNorm reads it back. Nothing else uses
+`x1` except the next residual, which reads it again.
+
+### The measurement
+
+Shape 6 chunk, B1024 S128 D128, float32. One activation is 64 MiB. Median of
+30 repeats, with `mx.eval` and `mx.synchronize` in the loop.
+
+```
+.venv/bin/python3 profiling/stage_roofline.py --shapes 6
+```
+
+| chain | eager | `mx.compile` | ratio |
+|---|---:|---:|---:|
+| add alone | 1.740 ms | — | — |
+| LayerNorm alone | 1.243 ms | — | — |
+| add then LayerNorm | 2.831 ms | 2.835 ms | 1.00x |
+| add, LayerNorm, add | 4.283 ms | 4.317 ms | 0.99x |
+
+**`mx.compile` does not fuse the pair.** This matches row 33, where it does
+not fuse the GELU either.
+
+### The byte count agrees
+
+| path | traffic | time at 124 GB/s |
+|---|---:|---:|
+| two kernels: read `x`, read `y`, write `x1`, read `x1`, write `h2` | 320 MiB | 2.71 ms |
+| one kernel, two outputs: read `x`, read `y`, write `x1`, write `h2` | 256 MiB | 2.17 ms |
+| one kernel, one output: read `x`, read `y`, write `h2` | 192 MiB | 1.62 ms |
+
+The measured 2.831 ms sits on the two-kernel line. Each pass therefore runs
+at the bandwidth roof already. A faster kernel cannot help. Only a kernel
+that moves fewer bytes can.
+
+### The estimate
+
+**The one-output line does not apply.** The residual output stays live: the
+block computes `x = x + attention` at L654, normalizes it at L656, and then
+reads the same `x` again at L658. The second pair behaves the same way
+across the layer boundary. So the fused kernel must write two outputs, and
+the reachable line is 256 MiB.
+
+One fused pair saves **0.54 ms**. A block holds two pairs, so the estimate
+is **1.08 ms of the 16.65 ms shape 6 layer, or 6.5%**.
+
+**The estimate is arithmetic, not a measurement.** It assumes the fused
+kernel reaches the same 124 GB/s. Measure it before you claim it.
+
+### Why it is cheap to try
+
+`fast_layernorm.py` already owns this kernel below `d_model = 256`, which
+covers shapes 1 to 7 and 9 to 13. The add becomes one extra input operand
+and one extra load in the existing kernel. It is not a new kernel.
+
+Shape 8 uses `mx.fast.layer_norm`, so it needs the same treatment as row 33,
+or it keeps the two-kernel path.
+
+### The risk
+
+The gain is 6.5% of one shape 6 layer, and it rests on one arithmetic step.
+A fused kernel that writes two outputs may not hold 124 GB/s, because it
+writes to two buffers instead of one. If it holds only 110 GB/s, the saving
+disappears. Measure a two-output kernel at this shape before you build the
+plan branch.
+
+## 36. Defer the residual biases, and give the residual add to the GEMM C operand — KEPT
+
+Found by the stage roofline sweep over all 13 shapes. It removes **two whole
+elementwise kernels** from every block.
+
+### The problem
+
+The block ran this twice for each layer:
+
+```python
+x = x + mx.addmm(layer["ob"], context, layer["ow"].T)
+```
+
+That is two kernels. The GEMM writes its result to DRAM, and the add reads it
+back with `x` and writes again. At the shape 6 chunk the pair moves 192 MiB
+for zero matmul FLOPs, and the stage roofline measured it at 1.635 ms and
+1.700 ms, which is 20% of the layer.
+
+### The lever
+
+`mx.addmm(c, a, b)` computes `c + a @ b`. Nobody had checked whether `c` may
+be the **whole activation** instead of a broadcast bias. It may, and the
+steel GEMM applies it from the accumulator tile, before the write:
+
+| shape | GEMM alone | `x + addmm(bias,·)` | `addmm(x,·)` full C | cost of C | saving |
+|---|---:|---:|---:|---:|---:|
+| 6, 131072x128 | 1.438 | 2.921 | 1.750 | 0.312 | 1.171 ms |
+| 13, 65536x128 | 0.796 | 1.621 | 0.990 | 0.194 | 0.631 ms |
+| 8, 8192x1024 | 4.417 | 5.168 | 4.459 | **0.043** | 0.708 ms |
+
+On shape 8 the C operand is nearly free, because that shape is compute bound
+and the extra read hides under the matmul.
+
+### The obstacle
+
+`addmm` gives one C, and the block needs both the residual **and** the bias
+vector. Adding the bias back as its own kernel destroys the win: 2.855 ms
+against 3.002 ms is nothing.
+
+### The answer: never add the bias to an activation
+
+Carry the bias as a `(d_model,)` vector. Let `true_x = x + carry`:
+
+```python
+x     = mx.addmm(x, context, layer["ow"].T)     # residual in C, no bias
+carry = carry + layer["ob"]                     # 128 elements
+
+h     = norm(x, layer["n2w"], layer["n2b"], carry)   # pre_bias absorbs it
+
+x     = mx.addmm(x, h, layer["fow"].T)
+carry = carry + layer["fob"]
+```
+
+Every LayerNorm already reads the activation, so `pre_bias` costs one vector
+load for each row. The **final** LayerNorm absorbs the accumulated `carry`.
+So the model never adds a bias to a full activation, not once.
+
+It is exact, not an approximation. Only the rounding order changes.
+
+### The gates
+
+    defer = plan.defer_bias and not padded and not half
+
+- **`padded`** keeps the plain path. The layer ends with
+  `mx.where(valid_tokens, x, 0)`, and that does not commute with a deferred
+  bias: zeroing `x` does not zero `x + carry`. `padded` is a compile time
+  flag, so the two graphs stay separate.
+- **`half`** keeps the plain path, so a float16 or bfloat16 run rounds
+  exactly as it did before. See row 13 for why those types cannot pass.
+- **`d_model >= 256`** keeps the plain path, because only `fast_layernorm`
+  takes a `pre_bias`. That is shape 8 alone, and it is the control below.
+
+### The result
+
+    .venv/bin/python3 scoreboard.py --cpu-cache --label "row 36: ..."
+
+**1.132x FLOP-weighted**, MLX 869.7 ms to 768.6 ms over the 13 shapes.
+
+| # | shape | weight | MLX before | MLX after | MLX | MPS control |
+|---:|---|---:|---:|---:|---:|---:|
+| 6 | B10000 D128 H4 S128 | 66.5% | 660.808 | 567.842 | **1.164x** | 1.017x |
+| 13 | B64 D128 H4 S1024 | 9.4% | 50.299 | 45.231 | 1.112x | 0.996x |
+| 11 | B64 D128 H16 S128 | 0.4% | 4.362 | 3.850 | 1.133x | 0.998x |
+| 9 | B64 D128 H1 S128 | 0.4% | 4.427 | 3.923 | 1.128x | 1.010x |
+| 1 | B64 D128 H4 S128 | 0.4% | 4.230 | 3.788 | 1.117x | 0.999x |
+| 10 | B64 D128 H2 S128 | 0.4% | 4.290 | 3.850 | 1.114x | 0.993x |
+| 5 | B128 D128 H4 S128 | 0.9% | 8.428 | 7.359 | 1.145x | 0.998x |
+| **8** | **B64 D1024 H4 S128** | **21.3%** | **127.573** | **127.557** | **1.000x** | 1.001x |
+
+**Shape 8 is the control.** Its plan sets `defer_bias=False`, and it did not
+move. MPS held at 1.013x over the whole sweep. So the gain is this change and
+not the machine.
+
+Shape 2 went 0.968x. It is 0.13 GFLOP and every stage sits at the launch
+floor, so that is jitter, not a regression. Its FLOP weight is 0.0%.
+
+### Accuracy
+
+All 13 shapes PASS at `atol=0.002` and `rtol=0.02`, `max_abs` 1.19e-06 to
+2.65e-06. That is the same band as before the change.
+
+`test_padding.py` is 18/18 bit exact. That test rebuilds a full mask variant
+by rewriting the source text of `_mlx_transformer()`, and this change moved
+the line it patched, so its patch target moved with it. The padded path
+itself did not change.
+
+### What it does not do
+
+Shape 8 carries 21.3% of the FLOP weight and gains nothing, because
+`mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free
+there (0.043 ms), so a wide `fast_layernorm` variant would collect about
+1.4 ms of its 32.1 ms layer, or 4.4%. That is row 37, and it is OPEN.
+
+## 37. A wide `fast_layernorm` variant, so shape 8 reaches row 36 — OPEN
+
+Shape 8 is the only shape that row 36 cannot serve. Its `d_model` is 1024, and
+`plan_kernels()` sends every width of 256 and above to `mx.fast.layer_norm`,
+which takes no `pre_bias`. So shape 8 keeps two separate residual add kernels
+and holds at 1.000x through the row 36 sweep.
+
+### The prize
+
+Measured at the shape 8 projection size, 8192 rows by 1024:
+
+| step | ms |
+|---|---:|
+| GEMM alone | 4.417 |
+| `x + mx.addmm(bias, h, w)`, what shape 8 runs | 5.168 |
+| `mx.addmm(x, h, w)`, C is full size | 4.459 |
+| **cost of the full C operand** | **0.043** |
+
+The C operand is almost free here. Shape 8 is compute bound, so the extra read
+hides under the matmul. Two residual adds per block is about **1.4 ms of the
+32.1 ms layer, or 4.4%**. At a 21.3% FLOP weight that is about **0.9%
+FLOP-weighted**.
+
+### The cost
+
+`fast_layernorm` gives one SIMD group of 32 lanes to a row, so each lane holds
+`ceil(D / 32)` floats. At `d_model` 1024 that is **32 floats per lane**,
+against 8 at the widest width it serves today. Register pressure is the open
+question. If the kernel spills, it loses more than the 0.043 ms it saves.
+
+Row 31 measured that `mx.fast.layer_norm` already runs at copy speed at
+`D >= 256`. So the LayerNorm itself has nothing to win at this width. **The
+`pre_bias` hook is the only reason to build this.**
+
+An alternative is a `pre_bias` variant that does not normalize at all, and
+instead folds the deferred bias into whatever kernel reads the activation
+next. That was not explored.

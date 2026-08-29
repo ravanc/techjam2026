@@ -79,8 +79,15 @@ def build_full_mask_variant() -> None:
     edits = [
         ("valid_tokens = valid_mask[..., None] if padded else None",
          "valid_tokens = valid_mask[..., None]"),
-        ("        x = x + attention\n",
-         "        x = x + mx.where(valid_tokens, attention, 0)\n"),
+        # Row 36 moved the residual add into the `defer` branch. `defer` is
+        # false whenever `padded` is true, so the padded path still runs this
+        # line, and it is still the right place to mask the attention output.
+        ('            x = x + mx.addmm(layer["ob"], context, layer["ow"].T)\n',
+         '            x = x + mx.where(\n'
+         '                valid_tokens,\n'
+         '                mx.addmm(layer["ob"], context, layer["ow"].T),\n'
+         '                0,\n'
+         '            )\n'),
         ("        if padded:\n            x = mx.where(valid_tokens, x, 0)\n",
          "        x = mx.where(valid_tokens, x, 0)\n"),
         ("return mx.where(valid_tokens, x, 0) if padded else x",

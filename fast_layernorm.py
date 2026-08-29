@@ -57,6 +57,7 @@ MAX_WIDTH = 256
 ROWS_PER_GROUP = 8
 
 _SOURCE = """
+    #define PRE_BIAS {pre_bias}
     constexpr uint SIMD = {simd};
     constexpr uint D = {width};
     constexpr uint K = (D + SIMD - 1) / SIMD;
@@ -73,11 +74,22 @@ _SOURCE = """
     device T* orow = out + (ulong)row * (ulong)D;
 
     // One coalesced read of the row. The values stay in registers.
+    //
+    // `pb` is the deferred bias. The block defers every residual bias into
+    // this vector instead of adding it to the whole activation, so this
+    // kernel adds it here. It is one 128 element vector load for the row,
+    // and the kernel is memory bound on the row itself, so it is free.
+    // See OPTIMIZATIONS.md row 36.
     float vals[K];
     float total = 0.0f;
     for (uint k = 0; k < K; ++k) {{
         uint j = lane + k * SIMD;
         float v = (j < D) ? (float)xr[j] : 0.0f;
+#if PRE_BIAS
+        if (j < D) {{
+            v += (float)pb[j];
+        }}
+#endif
         vals[k] = v;
         total += v;
     }}
@@ -104,9 +116,10 @@ _SOURCE = """
     }}
 """
 
-# One compiled kernel for each (width, eps). Building it is not free, so the
-# module keeps it.
-_CACHE: Dict[Tuple[int, float], object] = {}
+# One compiled kernel for each (width, eps, pre_bias). Building it is not
+# free, so the module keeps it. A model uses at most two entries per width:
+# one with the deferred bias and one without.
+_CACHE: Dict[Tuple[int, float, bool], object] = {}
 
 
 def supports(width: int, dtype: mx.Dtype) -> bool:
@@ -120,16 +133,18 @@ def supports(width: int, dtype: mx.Dtype) -> bool:
     return 0 < width < MAX_WIDTH and dtype == mx.float32
 
 
-def _kernel(width: int, eps: float):
-    key = (width, eps)
+def _kernel(width: int, eps: float, pre_bias: bool):
+    key = (width, eps, pre_bias)
     kernel = _CACHE.get(key)
     if kernel is None:
+        names = ["x", "w", "b"] + (["pb"] if pre_bias else [])
         kernel = mx.fast.metal_kernel(
-            name="techjam_layer_norm_w%d" % width,
-            input_names=["x", "w", "b"],
+            name="techjam_layer_norm_w%d%s" % (width, "_pb" if pre_bias else ""),
+            input_names=names,
             output_names=["out"],
             source=_SOURCE.format(
-                simd=SIMD_WIDTH, width=width, eps=float(eps)
+                simd=SIMD_WIDTH, width=width, eps=float(eps),
+                pre_bias=1 if pre_bias else 0,
             ),
         )
         _CACHE[key] = kernel
@@ -137,10 +152,22 @@ def _kernel(width: int, eps: float):
 
 
 def layer_norm(
-    x: mx.array, weight: mx.array, bias: mx.array, eps: float
+    x: mx.array,
+    weight: mx.array,
+    bias: mx.array,
+    eps: float,
+    pre_bias: Optional[mx.array] = None,
 ) -> mx.array:
     """
     LayerNorm over the last axis. It matches `mx.fast.layer_norm`.
+
+    `pre_bias` is an optional `(D,)` vector that the kernel adds to the row
+    BEFORE it normalizes. So `layer_norm(x, w, b, eps, pre_bias=c)` equals
+    `layer_norm(x + c, w, b, eps)`, and it costs no extra pass over `x`.
+
+    The block uses this to defer every residual bias. See OPTIMIZATIONS.md
+    row 36. Adding `c` to the whole activation costs a full read and a full
+    write of `x`. Adding it here costs one vector load for each row.
 
     The caller must test `supports()` first. This function does not fall
     back, so a wrong width raises instead of returning a wrong answer.
@@ -155,8 +182,16 @@ def layer_norm(
     flat = x.reshape(-1, width)
     n_rows = flat.shape[0]
 
-    outputs = _kernel(width, eps)(
-        inputs=[flat, weight, bias],
+    inputs = [flat, weight, bias]
+    if pre_bias is not None:
+        if pre_bias.shape != (width,):
+            raise ValueError(
+                "pre_bias must be (%d,), got %s" % (width, pre_bias.shape)
+            )
+        inputs.append(pre_bias)
+
+    outputs = _kernel(width, eps, pre_bias is not None)(
+        inputs=inputs,
         template=[("T", x.dtype)],
         grid=(SIMD_WIDTH, n_rows, 1),
         threadgroup=(SIMD_WIDTH, ROWS_PER_GROUP, 1),

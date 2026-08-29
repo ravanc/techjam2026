@@ -64,8 +64,27 @@ Two extra diagnostics print under each table:
   kernel. See OPTIMIZATIONS.md rows 32 and 34.
 
 Compare `sum of stages` against `real per layer`. The sum is the larger
-number, because `mx.compile` fuses the elementwise stages and the GPU
-overlaps the layers. When the two are far apart, the stage model is wrong.
+number, because the GPU overlaps the layers. When the two are far apart, the
+stage model is wrong.
+
+**The gap is not fusion.** `mx.compile` does not fuse the elementwise stages
+of this block. Measured at the shape 6 chunk (B1024 S128 D128), median of 30
+repeats:
+
+| chain | eager | `mx.compile` | ratio |
+|---|---:|---:|---:|
+| `addmm` then `gelu` | 2.4414 ms | 2.4414 ms | 1.00x |
+| add then LayerNorm | 2.8309 ms | 2.8347 ms | 1.00x |
+| add, LayerNorm, add | 4.2828 ms | 4.3166 ms | 0.99x |
+
+The byte count confirms it. One activation is 64 MiB. An unfused add plus
+LayerNorm moves 320 MiB, which is 2.71 ms at the 124 GB/s that this size
+reaches. The measurement is 2.83 ms. A fused pair would move 192 MiB, which
+is 1.62 ms. The chain therefore runs both passes, and each pass runs at the
+bandwidth roof.
+
+So an elementwise stage cannot get faster from a better kernel. It can only
+get faster from a kernel that moves fewer bytes.
 
 ### 4. Your own labels — find the slow layer
 

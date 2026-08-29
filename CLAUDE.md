@@ -101,12 +101,21 @@ Rules:
 5. Give the command that produced a number, next to the number.
 6. Record a failure as well as a success. A recorded failure stops repeated
    work.
-7. `scoreboard.py --cpu-cache` reuses a stored CPU reading. The flag is off
-   by default. Use it while you tune, because the CPU baseline takes most of
-   the sweep time. Do not use it for a number that you report. A cached
-   reading comes from an earlier sweep. That sweep ran under a different
-   machine load, at a different chip temperature. The speedup beside a cached
-   reading mixes two sweeps.
+7. **Always run `scoreboard.py` with `--cpu-cache`.** The flag is off by
+   default in the script, so pass it every time:
+
+       .venv/bin/python3 scoreboard.py --cpu-cache --label "what changed"
+
+   The CPU baseline takes most of the sweep time, and `BaselineTransformer`
+   never changes, so measuring it again on every sweep wastes minutes.
+
+   Know what this costs. A cached reading comes from an earlier sweep, under
+   a different machine load and at a different chip temperature. So the
+   **speedup** column mixes two sweeps and is approximate. The **MLX ms**
+   column does not: it is measured fresh every sweep, and it is the column
+   that decides whether an optimization won. Compare MLX ms against MLX ms.
+
+   Run without the flag only when the user asks for a clean CPU reference.
 
 ## The CPU cache
 

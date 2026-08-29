@@ -351,10 +351,15 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     total_ms = sum(s["ms"] for s in stages)
     attn_ms = sum(s["ms"] for s in stages[:7])
 
-    # The real model, for the same shape. `mx.compile` fuses the elementwise
-    # stages into their neighbours and the GPU overlaps the layers, so the
-    # sum of the isolated stages is always larger. The gap is what the fusion
-    # and the pipeline buy.
+    # The real model, for the same shape. The GPU overlaps the layers, so the
+    # sum of the isolated stages is always larger. The gap is what the
+    # pipeline buys.
+    #
+    # The gap is NOT fusion. `mx.compile` does not fuse the elementwise stages
+    # of this block. Measured at the shape 6 chunk: `addmm` then `gelu` is
+    # 2.4414 ms both eager and compiled, and add then LayerNorm is 2.8309 ms
+    # eager against 2.8347 ms compiled. The byte count agrees: the unfused
+    # pair moves 320 MiB, which is 2.71 ms at 124 GB/s. See WORKFLOW.md.
     real = torch.randn(batch, seq, d_model)
     with torch.no_grad():
         for _ in range(2):
@@ -435,8 +440,9 @@ def print_report(result: Dict) -> None:
     print("")
     print("`ms` has the %.4f ms eval+synchronize round trip removed; `raw` has not."
           % result["floor_ms"])
-    print("The isolated sum is larger than the real layer because mx.compile fuses")
-    print("the elementwise stages and the GPU overlaps the layers.")
+    print("The isolated sum is larger than the real layer because the GPU overlaps")
+    print("the layers. mx.compile does NOT fuse the elementwise stages: measured")
+    print("1.00x against eager for addmm+gelu and for add+LayerNorm. See WORKFLOW.md.")
     print("sdpa peak memory: %.1f MiB allocated. Operands+output alone would be %.1f MiB."
           % (result["sdpa_peak_mib"], result["operand_only_mib"]))
     print("   The full B x H x S x S score matrix is %.1f MiB. A delta near the"

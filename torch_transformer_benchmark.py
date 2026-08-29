@@ -234,6 +234,7 @@ class KernelPlan:
     pad_head_dim: Optional[int] = None
     steel_attention: bool = False
     fast_layer_norm: bool = False
+    defer_bias: bool = False
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -243,7 +244,8 @@ class KernelPlan:
             f"fuse_qkv={self.fuse_qkv} causal_block={block} "
             f"batch_chunk={chunk} pad_head_dim={pad} "
             f"steel={self.steel_attention} "
-            f"fast_ln={self.fast_layer_norm}"
+            f"fast_ln={self.fast_layer_norm} "
+            f"defer_bias={self.defer_bias}"
         )
 
 
@@ -464,6 +466,19 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     # dtype, so the test is on the width alone.
     use_fast_ln = fast_layer_norm_supports(config.d_model, mx.float32)
 
+    # Defer the residual biases into the LayerNorm, and give the residual add
+    # to the projection GEMM as its C operand. See OPTIMIZATIONS.md row 36.
+    #
+    # It needs the custom LayerNorm, because only that kernel takes a
+    # `pre_bias`. `mx.fast.layer_norm` has no such argument, so shape 8
+    # (d_model 1024) keeps the plain path.
+    #
+    # The padded path also keeps the plain path. It ends each layer with
+    # `mx.where(valid_tokens, x, 0)`, and that does not commute with a
+    # deferred bias: zeroing `x_hat` does not zero `x_hat + c`. `padded` is a
+    # compile time flag, so the two graphs stay separate.
+    use_defer_bias = use_fast_ln
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
@@ -471,6 +486,7 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         pad_head_dim=pad_head_dim,
         steel_attention=use_steel,
         fast_layer_norm=use_fast_ln,
+        defer_bias=use_defer_bias,
     )
 
 
@@ -569,10 +585,16 @@ def _mlx_transformer(
     # comes from the shape. See `plan_kernels()`.
     norm_kernel = fast_layer_norm if plan.fast_layer_norm else mx.fast.layer_norm
 
-    def norm(value, weight, bias):
-        result = norm_kernel(
-            value.astype(mx.float32), weight, bias, LAYER_NORM_EPS
-        )
+    def norm(value, weight, bias, pre=None):
+        value = value.astype(mx.float32)
+        if pre is None:
+            result = norm_kernel(value, weight, bias, LAYER_NORM_EPS)
+        else:
+            # Only `fast_layernorm` takes `pre_bias`, and `defer` below is
+            # false unless the plan selected that kernel.
+            result = norm_kernel(
+                value, weight, bias, LAYER_NORM_EPS, pre_bias=pre
+            )
         return result.astype(compute_dtype) if half else result
 
     batch, seq_len, d_model = x.shape
@@ -614,8 +636,25 @@ def _mlx_transformer(
     # writes the whole output again. `mx.compile` does NOT fuse that add.
     # Measured on the qkv projection alone: 6.768 ms to 3.749 ms at the
     # shape 6 dimensions. See OPTIMIZATIONS.md row 29.
+    # Defer the residual biases. `carry` is a (d_model,) vector, never a full
+    # activation. See OPTIMIZATIONS.md row 36.
+    #
+    #     true_x = x + carry
+    #
+    # The block keeps `x` without the biases and accumulates them in `carry`.
+    # Every LayerNorm reads `true_x`, so it takes `carry` as its `pre_bias`
+    # and costs one vector load for each row. That frees the C operand of
+    # each projection GEMM to carry the residual add instead, which removes
+    # two whole elementwise kernels from the block.
+    #
+    # `half` keeps the plain path, so a float16 or bfloat16 run rounds
+    # exactly as it does today. `padded` keeps it too: `mx.where` does not
+    # commute with a deferred bias.
+    defer = plan.defer_bias and not padded and not half
+    carry = None
+
     for layer in layers:
-        h = norm(x, layer["n1w"], layer["n1b"])
+        h = norm(x, layer["n1w"], layer["n1b"], carry)
 
         if plan.fuse_qkv:
             fused = mx.addmm(layer["qkvb"], h, layer["qkvw"])
@@ -642,7 +681,6 @@ def _mlx_transformer(
             context = context.transpose(
                 0, 2, 1, 3
             ).reshape(batch, seq_len, d_model)
-        attention = mx.addmm(layer["ob"], context, layer["ow"].T)
         # The baseline clears the padded rows of the attention output here.
         # This code does not, and the output stays bit exact. Attention is
         # the only operation that mixes the positions, and it runs above this
@@ -651,15 +689,29 @@ def _mlx_transformer(
         # valid position. The mask at the end of the block removes it. A NaN
         # from a fully masked query row goes the same way, because `mx.where`
         # selects a value and does not calculate one.
-        x = x + attention
+        if defer:
+            # `mx.addmm(x, ...)` is `x + context @ ow.T`. The steel GEMM
+            # applies C from the accumulator tile, so the residual add costs
+            # 0.31 ms here against 1.53 ms as its own kernel, at shape 6.
+            x = mx.addmm(x, context, layer["ow"].T)
+            ob = layer["ob"].astype(mx.float32)
+            carry = ob if carry is None else carry + ob
+        else:
+            x = x + mx.addmm(layer["ob"], context, layer["ow"].T)
 
-        h = norm(x, layer["n2w"], layer["n2b"])
+        h = norm(x, layer["n2w"], layer["n2b"], carry)
         h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
-        x = x + mx.addmm(layer["fob"], h, layer["fow"].T)
+        if defer:
+            x = mx.addmm(x, h, layer["fow"].T)
+            carry = carry + layer["fob"].astype(mx.float32)
+        else:
+            x = x + mx.addmm(layer["fob"], h, layer["fow"].T)
         if padded:
             x = mx.where(valid_tokens, x, 0)
 
-    x = norm(x, final_weight, final_bias)
+    # The final LayerNorm absorbs the whole deferred bias. So the block never
+    # adds it to a full activation, not once in the model.
+    x = norm(x, final_weight, final_bias, carry)
     # The final LayerNorm returns the bias at a zeroed position, not zero,
     # so this mask stays.
     return mx.where(valid_tokens, x, 0) if padded else x

@@ -8,14 +8,14 @@
     "torch_cpu_float32": 1.42
   },
   "torch_version": "2.13.0",
-  "elapsed_seconds": 176.35692591709085,
+  "elapsed_seconds": 194.97249391605146,
   "summary": {
     "cases_scored": 13,
-    "median_speedup_mlx": 13.875325649176597,
-    "min_speedup_mlx": 3.6908660562266764,
-    "max_speedup_mlx": 37.7603546940804,
-    "median_tflops_mlx": 1.9694064686438988,
-    "max_tflops_mlx": 3.7570695299341
+    "median_speedup_mlx": 14.093170564216644,
+    "min_speedup_mlx": 3.691327802094303,
+    "max_speedup_mlx": 41.99144120491916,
+    "median_tflops_mlx": 2.230958588911843,
+    "max_tflops_mlx": 4.178053028028189
   },
   "cpu_cached_cases": [
     1,
@@ -46,23 +46,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 61.251583499999995,
-        "mps": 17.295291499999998,
-        "mlx": 4.229979
+        "mps": 17.3087705,
+        "mlx": 3.788417
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.541517846056541,
-        "mlx": 14.480351675504771
+        "mps": 3.538759930984121,
+        "mlx": 16.16812074805915
       },
       "tflops": {
         "cpu": 0.140240204434878,
-        "mps": 0.49666318674073817,
-        "mlx": 2.030727479261717
+        "mps": 0.49627641616716794,
+        "mlx": 2.267420559035608
       },
       "accuracy": {
         "mps": {
@@ -73,7 +73,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.6689300537109375e-06,
+          "max_abs_error": 1.9073486328125e-06,
           "failed_elements": 0,
           "total_elements": 1048576
         }
@@ -82,7 +82,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:28:22",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -105,23 +105,23 @@
       },
       "flops": 134217728,
       "tokens": 128,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 2.571104,
-        "mps": 1.5754165,
-        "mlx": 0.6311249999999999
+        "mps": 1.643687,
+        "mlx": 0.6521874999999999
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 1.6320154067194295,
-        "mlx": 4.073842741136859
+        "mps": 1.5642296860655345,
+        "mlx": 3.942277335888836
       },
       "tflops": {
         "cpu": 0.052202372210536786,
-        "mps": 0.08519507571489826,
-        "mlx": 0.2126642551000198
+        "mps": 0.08165650029476416,
+        "mlx": 0.2057962288452324
       },
       "accuracy": {
         "mps": {
@@ -132,7 +132,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 9.5367431640625e-07,
+          "max_abs_error": 1.1920928955078125e-06,
           "failed_elements": 0,
           "total_elements": 16384
         }
@@ -141,7 +141,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:28:23",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -164,23 +164,23 @@
       },
       "flops": 536870912,
       "tokens": 512,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 7.169396000000001,
-        "mps": 2.0137915,
-        "mlx": 0.7721875
+        "mps": 2.0243960000000003,
+        "mlx": 0.757208
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.560148108679573,
-        "mlx": 9.284527397814651
+        "mps": 3.541498797666069,
+        "mlx": 9.46819896250436
       },
       "tflops": {
         "cpu": 0.07488370177906199,
-        "mps": 0.26659706925965276,
-        "mlx": 0.6952597808174827
+        "mps": 0.26520053981533254,
+        "mlx": 0.7090137874930006
       },
       "accuracy": {
         "mps": {
@@ -200,7 +200,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:28:25",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -223,23 +223,23 @@
       },
       "flops": 2147483648,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 19.3734165,
-        "mps": 4.7062085,
-        "mlx": 1.3962495000000001
+        "mps": 4.726020999999999,
+        "mlx": 1.374667
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 4.1165657025182805,
-        "mlx": 13.875325649176597
+        "mps": 4.099308170657728,
+        "mlx": 14.093170564216644
       },
       "tflops": {
         "cpu": 0.11084692511514424,
-        "mps": 0.456308650158615,
-        "mlx": 1.5380371831825184
+        "mps": 0.454395705816796,
+        "mlx": 1.5621846221666775
       },
       "accuracy": {
         "mps": {
@@ -250,7 +250,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.1920928955078125e-06,
+          "max_abs_error": 1.430511474609375e-06,
           "failed_elements": 0,
           "total_elements": 262144
         }
@@ -259,7 +259,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:28:29",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -282,23 +282,23 @@
       },
       "flops": 17179869184,
       "tokens": 16384,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 23,
       "rounds": 3,
       "median_ms": {
         "cpu": 139.502458,
-        "mps": 33.4585,
-        "mlx": 8.428208
+        "mps": 33.535334,
+        "mlx": 7.358541
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 4.169417576998371,
-        "mlx": 16.551852778194366
+        "mps": 4.1598648756562255,
+        "mlx": 18.957896409084356
       },
       "tflops": {
         "cpu": 0.12315101418499738,
-        "mps": 0.5134680031681038,
-        "mlx": 2.038377456275403
+        "mps": 0.5122915783096121,
+        "mlx": 2.334684169592858
       },
       "accuracy": {
         "mps": {
@@ -309,7 +309,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.6689300537109375e-06,
+          "max_abs_error": 1.9073486328125e-06,
           "failed_elements": 0,
           "total_elements": 2097152
         }
@@ -318,7 +318,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:28:44",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -341,23 +341,23 @@
       },
       "flops": 1342177280000,
       "tokens": 1280000,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
         "cpu": 14639.95975,
-        "mps": 2715.305417,
-        "mlx": 660.807959
+        "mps": 2669.15075,
+        "mlx": 567.842375
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 5.391643849101488,
-        "mlx": 22.154635928045778
+        "mps": 5.484875573251156,
+        "mlx": 25.781731682141547
       },
       "tflops": {
         "cpu": 0.0916790280109889,
-        "mps": 0.49430066746705126,
-        "mlx": 2.0311154878205695
+        "mps": 0.5028480613168814,
+        "mlx": 2.363644101058855
       },
       "accuracy": {
         "mps": {
@@ -368,7 +368,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.9073486328125e-06,
+          "max_abs_error": 2.384185791015625e-06,
           "failed_elements": 0,
           "total_elements": 163840000
         }
@@ -377,7 +377,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:35:43",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -400,23 +400,23 @@
       },
       "flops": 939524096,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 25.9588955,
-        "mps": 11.5718125,
-        "mlx": 1.144708
+        "mps": 11.241583,
+        "mlx": 1.1240835
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.243286909462109,
-        "mlx": 22.67730766274019
+        "mps": 2.3091850587234912,
+        "mlx": 23.09338719054234
       },
       "tflops": {
         "cpu": 0.03619276082065972,
-        "mps": 0.08119074656627906,
-        "mlx": 0.8207543722940697
+        "mps": 0.08357578252102038,
+        "mlx": 0.8358134391261859
       },
       "accuracy": {
         "mps": {
@@ -436,7 +436,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:35:50",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -459,23 +459,23 @@
       },
       "flops": 429496729600,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False defer_bias=False",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
         "cpu": 470.854084,
-        "mps": 165.297709,
-        "mlx": 127.572791
+        "mps": 165.155667,
+        "mlx": 127.556833
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.8485215363753165,
-        "mlx": 3.6908660562266764
+        "mps": 2.8509714050562978,
+        "mlx": 3.691327802094303
       },
       "tflops": {
         "cpu": 0.912165242257939,
-        "mps": 2.5983223373047477,
-        "mlx": 3.3666797303196105
+        "mps": 2.6005570223636347,
+        "mlx": 3.3671009188508148
       },
       "accuracy": {
         "mps": {
@@ -495,7 +495,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:36:02",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -518,23 +518,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 35.0989795,
-        "mps": 8.015167,
-        "mlx": 4.427438
+        "mps": 7.931958,
+        "mlx": 3.9231875
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 4.379070267656307,
-        "mlx": 7.927604971543361
+        "mps": 4.425008238823251,
+        "mlx": 8.946546526262127
       },
       "tflops": {
         "cpu": 0.24473459668535377,
-        "mps": 1.0717099958116905,
-        "mlx": 1.94015920539147
+        "mps": 1.0829526066577762,
+        "mlx": 2.1895294558315146
       },
       "accuracy": {
         "mps": {
@@ -545,7 +545,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.6689300537109375e-06,
+          "max_abs_error": 1.430511474609375e-06,
           "failed_elements": 0,
           "total_elements": 1048576
         }
@@ -554,7 +554,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:36:10",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -577,23 +577,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 46.1064795,
-        "mps": 12.878625,
-        "mlx": 4.2895415
+        "mps": 12.9663125,
+        "mlx": 3.850292
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.5800778033369247,
-        "mlx": 10.74857988901611
+        "mps": 3.5558667508591975,
+        "mlx": 11.974800742385252
       },
       "tflops": {
         "cpu": 0.18630645161272832,
-        "mps": 0.6669915920371935,
-        "mlx": 2.0025297789985244
+        "mps": 0.6624809167602586,
+        "mlx": 2.230982635083261
       },
       "accuracy": {
         "mps": {
@@ -604,7 +604,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.6689300537109375e-06,
           "failed_elements": 0,
           "total_elements": 1048576
         }
@@ -613,7 +613,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:36:19",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -636,23 +636,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 130.288729,
-        "mps": 41.881854,
-        "mlx": 4.361687
+        "mps": 41.9657495,
+        "mlx": 3.8503335
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.110863454134576,
-        "mlx": 29.871178055646816
+        "mps": 3.1046443957828034,
+        "mlx": 33.83829712413223
       },
       "tflops": {
         "cpu": 0.06592998993796309,
-        "mps": 0.2050991962294697,
-        "mlx": 1.9694064686438988
+        "mps": 0.20468917377491372,
+        "mlx": 2.230958588911843
       },
       "accuracy": {
         "mps": {
@@ -672,7 +672,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:36:46",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -695,23 +695,23 @@
       },
       "flops": 1744830464,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 12.223811999999999,
-        "mps": 3.3926670000000003,
-        "mlx": 1.3821045
+        "mps": 3.341375,
+        "mlx": 1.3088335
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.6030096676154773,
-        "mlx": 8.844347153200065
+        "mps": 3.658317908046836,
+        "mlx": 9.339470604931796
       },
       "tflops": {
         "cpu": 0.14274028952670414,
-        "mps": 0.5142946431229473,
-        "mlx": 1.2624446733224586
+        "mps": 0.522189357375332,
+        "mlx": 1.333118738174107
       },
       "accuracy": {
         "mps": {
@@ -731,7 +731,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:36:48",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
@@ -754,23 +754,23 @@
       },
       "flops": 188978561024,
       "tokens": 65536,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
         "cpu": 1899.325375,
-        "mps": 560.786708,
-        "mlx": 50.299458
+        "mps": 562.926459,
+        "mlx": 45.23125
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.3868944251082356,
-        "mlx": 37.7603546940804
+        "mps": 3.3740204331024346,
+        "mlx": 41.99144120491916
       },
       "tflops": {
         "cpu": 0.09949772877856697,
-        "mps": 0.33698830291105974,
-        "mlx": 3.7570695299341
+        "mps": 0.33570736994616907,
+        "mlx": 4.178053028028189
       },
       "accuracy": {
         "mps": {
@@ -781,7 +781,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.5497207641601562e-06,
+          "max_abs_error": 1.6689300537109375e-06,
           "failed_elements": 0,
           "total_elements": 8388608
         }
@@ -790,7 +790,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-29T17:37:28",
-          "uses": 1,
+          "uses": 2,
           "limit": 5,
           "git": {
             "commit": "f9e3be7",
