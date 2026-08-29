@@ -49,6 +49,9 @@ Status:
 | 28 | Drop the token masks that cannot change the output | **KEPT** | `_mlx_transformer()` L570, L611, L617 | every shape. The unpadded graph now holds no mask operation | bit exact on 18 cases (`test_padding.py`). **1.048x FLOP-weighted** (MLX 841.6 ms to 803.2 ms). Shape 6 1.050x. MPS held at 1.010x and CPU at 1.005x on the same sweep, so the noise floor is about 1% |
 | 29 | `mx.addmm` for every projection, in place of `h @ w + b` | **KEPT** | `_mlx_transformer()` L587-L616 | every shape. Always on | **1.096x FLOP-weighted** (MLX 803.2 ms to 732.6 ms). Shape 6 1.099x, shape 8 1.040x, shape 13 1.092x. Bit exact in float32 on 16 cases |
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
+| 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L563, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
+| 32 | Give the attention kernel contiguous q, k and v | **OPEN** | — | every shape on the steel path | not tried at the model level. An MLX transpose is a free strided view, so the head layout costs nothing as a stage and costs inside the attention kernel instead. Shape 6: SDPA is 5.54 ms on the strided view and **2.13 ms on contiguous copies, 2.60x**. A `mx.contiguous` first does not pay (3.29 ms of copy makes the total 5.42 ms, only 1.02x). The win needs the QKV projection to write the head layout directly, or a kernel that reads the stride well |
+| 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. MLX exposes no matmul epilogue, so Python may not be able to reach it |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -1029,3 +1032,279 @@ rank 2 block must reshape into attention and out of it, and `valid_tokens`
 changes shape as well. It buys nothing. Do not try it again.
 
 Row 29 keeps the `mx.addmm`, at rank 3.
+
+## 31. Single-pass LayerNorm kernel for a narrow row — KEPT
+
+Found by `profiling/stage_roofline.py`. The two LayerNorm calls of one block
+do **zero matmul FLOPs** and take **26% of the shape 6 layer time**.
+
+    .venv/bin/python3 profiling/stage_roofline.py --shapes 6
+
+| Stage of one shape 6 layer, one chunk of 1024 | ms | share |
+|---|---:|---:|
+| ln1 | 3.710 | 12.9% |
+| ln2 | 3.610 | 12.6% |
+| everything else | 21.36 | 74.5% |
+| real layer time | 28.68 | |
+
+### The cause is the layer_norm kernel alone
+
+`mx.fast.layer_norm` loses throughput as the row gets narrower. Measured at a
+constant 64 MiB, so the row count rises as `D` falls:
+
+| row width `D` | 32 | 64 | 96 | **128** | 192 | 256 | 512 | 1024 | 2048 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| copy `x * 2` | 108 | 109 | 108 | 109 | 108 | 106 | 108 | 110 | 110 |
+| `fast.rms_norm` | 74 | 106 | 107 | **107** | 105 | 107 | 107 | 109 | 108 |
+| `fast.layer_norm` | **5.5** | **12** | **21** | **33** | 87 | 105 | 107 | 107 | 106 |
+| layer_norm / copy | 19.8x | 8.8x | 5.0x | **3.3x** | 1.2x | 1.0x | 1.0x | 1.0x | 1.0x |
+
+At `D >= 256` layer_norm reaches copy speed. Below 256 it degrades as about
+`1/D`. That is the signature of a kernel that gives one thread or one small
+group to each row, and does not vectorize along the row.
+
+The two pieces layer_norm is built from both hold full speed at every width:
+
+| operation at `D` = | 32 | 128 | 256 | 1024 |
+|---|---:|---:|---:|---:|
+| `mx.mean(x, axis=-1)`, GB/s of the read | 93 | 97 | 93 | 98 |
+| `mx.fast.rms_norm`, GB/s | 74 | 107 | 109 | 109 |
+
+So the memory system is not the limit. The reduction width is not the limit.
+The weight and the bias are not the limit either: layer_norm with no weight
+and no bias still gives 36 GB/s at `D = 128`, against 33 with both.
+
+Twelve of the fourteen appendix shapes use `d_model` 128 or 32, so they all
+take the slow path.
+
+### What was tried
+
+`layer_norm(x) == rms_norm(x - mean(x)) + bias`. The rewrite is accurate
+(`max_abs_diff` 9.5e-07 to 1.4e-06, inside the 0.002 threshold), but it wins
+only where `B * S` is small:
+
+| B, S, D | `fast.layer_norm` | `rms_norm(x - mean)` | gain |
+|---|---:|---:|---:|
+| 64, 128, 128 (shape 1) | 0.382 ms | 0.259 ms | **1.47x** |
+| 64, 128, 32 (shape 7) | 0.528 ms | 0.207 ms | **2.55x** |
+| 1024, 128, 128 (shape 6 chunk) | 3.733 ms | 3.720 ms | 1.00x |
+| 64, 1024, 128 (shape 13) | 1.922 ms | 1.943 ms | 0.99x |
+
+Shape 6 and shape 13 carry 76% of the FLOP weight and neither moves, so the
+rewrite as written is not worth taking. The mean pass costs at a large
+`B * S` exactly what the layer_norm kernel's extra pass costs.
+
+### Why the rewrite ties at the shapes that matter
+
+The rewrite needs 3 to 4 passes over DRAM: one to read for the mean, one to
+subtract it, one for `rms_norm`, one to add the bias. `mx.compile` merges
+some of them, but not all. `mx.fast.layer_norm` needs about 3.3 passes in one
+kernel. The two costs match, so the times match.
+
+At a small `B * S` the rewrite still wins, because each pass is then short
+enough that the launch cost decides the result, and layer_norm pays its own
+launch as well.
+
+### The prize
+
+`mx.fast.rms_norm` proves the hardware runs this shape of work at 107 GB/s.
+A single-pass LayerNorm holds `sum(x)` and `sum(x*x)` in one accumulator
+pair, so it needs one read and one write, exactly like rms_norm.
+
+| Shape | FLOP share | LayerNorm share of the layer | time saved at copy speed |
+|---:|---:|---:|---:|
+| 6 | 66.5% | 25.5% (7.32 of 28.68 ms) | 5.09 ms, 17.7% |
+| 8 | 21.3% | 4.0%, `d_model = 1024` | none. Already at copy speed |
+| 13 | 9.4% | 20.8% (3.67 of 17.64 ms) | 2.52 ms, 14.3% |
+
+That is about **1.15x to 1.20x** on the FLOP-weighted sweep. It is larger
+than row 28 (1.048x) and row 29 (1.096x).
+
+### The kernel
+
+`fast_layernorm.py`. One SIMD group of 32 lanes takes one row. Lane `l` reads
+elements `l`, `l + 32`, `l + 64`, so the 32 lanes of one step read 32 adjacent
+floats. That read is coalesced. The lane keeps its values in registers, and
+the two reductions then run over the registers, not over DRAM:
+
+1. Sum, then `simd_sum`, gives the mean.
+2. Sum of `(v - mean)^2`, then `simd_sum`, gives the variance.
+
+So the kernel makes ONE pass over memory. The centred form is deliberate. The
+one-pass `E[x^2] - mean^2` form is cheaper, but it cancels when the mean is
+large against the standard deviation. The centred form matches the torch
+baseline, and the extra reduction is free because the kernel is memory bound.
+
+The kernel holds `ceil(D / 32)` floats per lane, so it serves `D < 256`. At
+256 and above `mx.fast.layer_norm` already reaches copy speed, and
+`plan_kernels()` leaves that work with MLX.
+
+### The measurement
+
+    .venv/bin/python3 scoreboard.py --cpu-cache --label "row 31: single-pass LayerNorm kernel at d_model < 256"
+
+Compare the MLX column against the row 29 sweep. Do NOT compare the speedup
+against the CPU: the CPU baseline drifted up to 45.9% between the two sweeps,
+which inflates every CPU-relative number.
+
+| # | Shape | MLX before | MLX now | gain |
+|---:|---|---:|---:|---:|
+| 1 | B64 D128 H4 S128 | 6.889 | 5.502 | 1.25x |
+| 2 | B1 D128 H4 S128 | 0.748 | 0.650 | 1.15x |
+| 3 | B4 D128 H4 S128 | 0.956 | 0.877 | 1.09x |
+| 4 | B16 D128 H4 S128 | 2.091 | 1.764 | 1.19x |
+| 5 | B128 D128 H4 S128 | 13.571 | 11.264 | 1.20x |
+| 6 | B10000 D128 H4 S128 | 1050.066 | 852.760 | **1.23x** |
+| 7 | B64 D32 H4 S128 | 4.761 | 1.395 | **3.41x** |
+| 8 | B64 D1024 H4 S128 | 128.463 | 128.377 | 1.00x |
+| 9 | B64 D128 H1 S128 | 6.268 | 4.438 | 1.41x |
+| 10 | B64 D128 H2 S128 | 6.151 | 4.346 | 1.42x |
+| 11 | B64 D128 H16 S128 | 7.061 | 5.342 | 1.32x |
+| 12 | B64 D128 H4 S32 | 2.007 | 1.481 | 1.36x |
+| 13 | B64 D128 H4 S1024 | 69.288 | 59.429 | 1.17x |
+| | **total** | **1298.32** | **1077.62** | **1.205x** |
+
+Shape 7 gives 3.41x because `d_model` is 32, where `mx.fast.layer_norm` runs
+at 5.5 GB/s against 108 for a copy. That shape carries almost no FLOP weight,
+so it does not drive the total. Shape 6 does.
+
+### The controls
+
+Two columns must NOT improve, because this change touches neither. Both held:
+
+| # | CPU before -> now | MPS before -> now |
+|---:|---|---|
+| 1 | 41.975 -> 61.252 (**+45.9%**) | 17.313 -> 17.943 (+3.6%) |
+| 6 | 13698.8 -> 14640.0 (+6.9%) | 2680.8 -> 2693.6 (+0.5%) |
+| 8 | 471.9 -> 470.9 (-0.2%) | 165.5 -> 166.6 (+0.7%) |
+| 13 | 1858.0 -> 1899.3 (+2.2%) | 564.8 -> 577.6 (+2.3%) |
+
+MPS moved between +0.5% and +3.6%, all in the SLOWER direction. So the GPU
+did not get faster between the sweeps, and the 1.205x is the kernel.
+
+Shape 8 gives MLX 1.00x. That is the gate working: `d_model` is 1024, so
+`plan_kernels()` sets `fast_ln=False` and MLX keeps the work.
+
+### The stage-level proof
+
+    .venv/bin/python3 profiling/stage_roofline.py --shapes 6
+
+The LayerNorm stage now runs at the copy roof. Nothing else moved:
+
+| Shape 6 stage, one layer, one chunk | before | after | change |
+|---|---:|---:|---|
+| ln1 | 3.71 ms, 36.2 GB/s | **1.12 ms, 119.8 GB/s** | **3.31x** |
+| ln2 | 3.61 ms, 37.2 GB/s | **1.12 ms, 119.9 GB/s** | **3.22x** |
+| qkv proj | 3.64 ms | 3.55 ms | — |
+| sdpa | 5.64 ms | 5.57 ms | — |
+| out proj | 1.34 ms | 1.32 ms | — |
+| **real layer time** | **28.68 ms** | **20.71 ms** | **1.385x** |
+
+The roof for a data movement stage is 128 GB/s. The kernel reaches 119.8, so
+it is at 94% of the roof and there is almost nothing left in it. LayerNorm
+fell from 25.5% of the layer to 10.8%.
+
+The stage sum and the real layer time now agree to 0.5% (20.81 against
+20.71 ms), so the stage model holds.
+
+Note: `stage_roofline.py` profiles the LayerNorm that `plan_kernels()`
+selects. An earlier version called `mx.fast.layer_norm` directly and reported
+the old rate after this change landed. That was a bug in the tool, and it is
+fixed.
+
+### Accuracy
+
+All 13 shapes PASS at `atol=0.002`, `rtol=0.02`. `max_abs` runs 9.54e-07 to
+2.65e-06, which is the same band as the previous sweep.
+
+`test_padding.py` passes all 18 cases, bit exact. That set includes a fully
+empty sample. A row of zeros gives mean 0 and variance 0, so `rstd` becomes
+`1/sqrt(eps)`, which is finite. The kernel returns the bias there, exactly as
+`mx.fast.layer_norm` does.
+
+The harness at its own config (`d_model = 512`) gives PASS `max_abs=2.98e-06`
+and 4.974x. That config does not reach the kernel, so it only shows that
+nothing broke:
+
+    .venv/bin/python3 torch_transformer_benchmark.py
+
+## 32. Give the attention kernel contiguous q, k and v — OPEN
+
+Found by `profiling/stage_roofline.py`. An MLX transpose is a **free strided
+view**, not a copy:
+
+| B1024 S128 H4 hd32 | ms |
+|---|---:|
+| `mx.split` alone | 0.0425 |
+| `mx.split` + `transpose(0, 2, 1, 3)` | 0.0415 |
+| the same, then `mx.contiguous` | 3.5495 |
+
+So the head layout costs nothing as a stage. An earlier version of the stage
+profiler reported 3.25 ms for it, and that number was **wrong**: the profiler
+added an `mx.concatenate` to force the copy, and measured its own artifact.
+
+The cost is real, but it lands inside the attention kernel, which reads q, k
+and v with a stride instead of in order:
+
+| Shape | sdpa on the strided view | sdpa on contiguous copies | ratio | cost of the copy |
+|---|---:|---:|---:|---:|
+| 6 (B1024 chunk, S128, hd32) | 5.539 ms | **2.131 ms** | **2.60x** | 3.291 ms |
+| 13 (B64, S1024, hd32) | 6.625 ms | 5.148 ms | 1.29x | 1.644 ms |
+| 11 (B64, S128, H16, hd8) | 0.536 ms | 0.318 ms | 1.68x | 0.365 ms |
+| 8 (B64, S128, hd256, fallback) | 2.622 ms | 2.712 ms | 0.97x | 1.839 ms |
+
+Shape 6 loses **3.41 ms of 5.54 ms**, 61% of its attention time, to
+non-coalesced reads alone.
+
+### Why a `mx.contiguous` first does not pay
+
+At shape 6 the copy costs 3.291 ms and saves 3.408 ms. The total goes 5.539
+to 5.422 ms, which is 1.02x and inside the noise floor. The copy itself runs
+at 98 GB/s, near the roof, so there is nothing to tune in it.
+
+**The row stays OPEN.** Two paths could collect the 3.41 ms:
+
+1. Make the QKV projection write `[B, H, S, head_dim]` directly. The matmul
+   output is indexed `(b, s)` by `(h, d)`, so `s` must move inside `h`. That
+   is a transpose of the matmul output, and it is not free.
+2. Change the read pattern of `steel_attention.py` to suit the stride.
+
+Shape 8 is the control: it takes the FALLBACK kernel, and the ratio there is
+0.97x. The strided penalty belongs to the steel kernel, not to every kernel.
+
+
+## 33. Fold GELU into the FFN matmul epilogue — OPEN
+
+Found by `profiling/stage_roofline.py`. The `ffn_in + gelu` stage reaches 45%
+of the matmul peak. `ffn_out` runs the same size matmul and reaches 80%. The
+difference is the GELU.
+
+Measured at the shape 6 chunk FFN size, 131072 rows by 128, a 64 MiB
+activation:
+
+| step | ms |
+|---|---:|
+| `mx.addmm` alone | 1.417 |
+| `mx.addmm` then GELU | 2.385 |
+| GELU alone, on an evaluated input | 1.166 |
+| `mx.compile` of `gelu(addmm(...))` | 2.378 |
+
+GELU adds 0.968 ms. A separate read plus write of 64 MiB at the measured
+128 GB/s roof costs 1.049 ms. The two agree, so GELU is exactly one extra
+pass over DRAM.
+
+The GELU kernel is not slow. Alone it reaches 115 GB/s, which is 90% of the
+copy roof. The cost is the pass itself, not the arithmetic.
+
+**`mx.compile` does not fuse it.** 2.378 ms compiled against 2.385 ms plain
+is inside the noise. MLX fuses elementwise chains, but it does not fuse an
+elementwise operation into a GEMM epilogue.
+
+At shape 6 this is 0.968 ms for each layer and each chunk, so 4 layers by 10
+chunks is 38.7 ms of the 852.8 ms runtime, or **4.5%**.
+
+**The row stays OPEN, and it may not be reachable.** MLX exposes no matmul
+epilogue through its Python API. `steel_attention.py` shows one way around a
+missing dispatch, by hoisting the Metal source of a kernel MLX already ships.
+The same trick would need a GEMM template with an epilogue hook. Nobody
+checked whether the MLX steel GEMM headers offer one.

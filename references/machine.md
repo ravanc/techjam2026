@@ -47,13 +47,88 @@ True, so `mps` is the torch GPU device.
 
 Use these to tell a slow kernel from a shape that is simply small.
 
-| Item | Rate |
-|---|---|
-| GPU float32 matmul, peak | about 3.5 TFLOP/s |
-| Unified memory bandwidth | about 150 GB/s |
+| Item | Rate | Source |
+|---|---|---|
+| GPU float32 matmul, measured | 4.06 TFLOP/s | `flops.py --peak` |
+| Memory bandwidth, specification | 150 GB/s | Apple, for the M3 Pro |
+| Memory bandwidth, **measured streaming** | **128 GB/s** | `x * 2.0` at 1 GiB |
+
+Use the measured 128 GB/s as the roof, not the 150 GB/s specification. A
+kernel cannot exceed what a plain copy reaches.
+
+**An array under 64 MiB does not reach the roof.** Measured with `x * 2.0`,
+reading plus writing:
+
+| array | 1 MiB | 4 MiB | 16 MiB | 64 MiB | 256 MiB | 1 GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| GB/s | 7.1 | 34.9 | 72.9 | 109.0 | 125.6 | 128.1 |
+
+That table alone explains the small shapes. At shape 1 one activation is
+4 MiB, so every data movement stage there runs at a quarter of the roof.
+
+**Ridge point: 4.06e12 / 128e9 = 31.7 FLOP/byte.** A stage below that
+intensity is memory-bound and cannot reach the arithmetic peak, whatever
+the kernel does. Every projection in this model sits at 32 FLOP/byte, right
+on the ridge, except the shape 8 projections at 241 to 351.
 
 A kernel that reaches under 100 GFLOP/s is either launch-bound or
 memory-bound. Check the arithmetic intensity before you rewrite it.
+
+## The kernel launch floor
+
+One `mx.eval()` + `mx.synchronize()` round trip costs **0.13 to 0.17 ms**,
+and it includes the CPU graph build of one small operation. Extra kernels
+inside one `eval` cost about 0.004 ms each, so the round trip dominates.
+
+Subtract this floor from any timing of a single operation. At shape 2 the
+whole model is 0.75 ms, which is four round trips, so every stage of that
+shape sits at the floor. Measure it again with:
+
+    .venv/bin/python3 profiling/stage_roofline.py --shapes 2
+
+## mx.fast.layer_norm collapses below a row width of 256
+
+`mx.fast.layer_norm` loses throughput as the normalized row gets narrower.
+Nothing else does. Measured at a constant 64 MiB, so the row count rises as
+`D` falls. GB/s counts the read plus the write:
+
+| row width `D` | 32 | 64 | 96 | **128** | 192 | 256 | 512 | 1024 | 2048 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| copy `x * 2` | 108 | 109 | 108 | 109 | 108 | 106 | 108 | 110 | 110 |
+| `fast.rms_norm` | 74 | 106 | 107 | **107** | 105 | 107 | 107 | 109 | 108 |
+| `fast.layer_norm` | **5.5** | **12** | **21** | **33** | 87 | 105 | 107 | 107 | 106 |
+| layer_norm / copy | 19.8x | 8.8x | 5.0x | **3.3x** | 1.2x | 1.0x | 1.0x | 1.0x | 1.0x |
+
+At `D >= 256` layer_norm runs at copy speed. Below 256 it degrades roughly
+as `1/D`, which is the signature of a kernel that gives one thread or one
+small group to each row and does not vectorize along it.
+
+**The penalty belongs to `layer_norm` alone.** The two pieces it is built
+from both run at full speed at every width:
+
+| operation at `D` = | 32 | 128 | 256 | 1024 |
+|---|---:|---:|---:|---:|
+| `mx.mean(x, axis=-1)`, GB/s of the read | 93 | 97 | 93 | 98 |
+| `mx.fast.rms_norm`, GB/s | 74 | 107 | 109 | 109 |
+
+So this is not the memory system, not the reduction width, and not the
+hardware. The weight and the bias are not the cause either: layer_norm with
+no weight and no bias still gives 36 GB/s at `D = 128`.
+
+Twelve of the fourteen appendix shapes use `d_model` 128 or 32, so they all
+took the slow path. `fast_layernorm.py` now replaces the kernel below a width
+of 256, and it gave **1.205x** on the FLOP-weighted sweep. See
+`OPTIMIZATIONS.md` row 31, which is KEPT.
+
+## An MLX transpose is a free view
+
+`x.transpose(0, 2, 1, 3)` costs nothing. It builds a strided view, and
+`mx.eval` on it does not copy. Measured at B1024 S128 H4 hd32: the split
+plus the transpose is 0.042 ms, and `mx.contiguous` of the same result is
+3.55 ms.
+
+The cost does not disappear. It moves into the kernel that consumes the
+view, which then reads with a stride. See `OPTIMIZATIONS.md` row 32.
 
 ## Timing rules
 

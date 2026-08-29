@@ -3,7 +3,7 @@
 This guide tells you how to find slow code and how to make it faster.
 For the setup steps and the platform problems, read `README.md`.
 
-## The three tools
+## The four tools
 
 ### 1. The timeline — find the slow model
 
@@ -34,7 +34,35 @@ open profiling/traces/optimized_mlx.gputrace
 Xcode shows the time for each GPU kernel. The shader profiler shows the cost
 of each instruction. It tells you if a kernel waits for memory or for math.
 
-### 3. Your own labels — find the slow layer
+### 3. The stage roofline — find the slow stage, and its limit
+
+```
+.venv/bin/python3 profiling/stage_roofline.py --shapes 1,6,8,13
+```
+
+It splits one transformer block into eleven stages, times each one alone,
+and names what limits it: the arithmetic units, the memory system, or the
+kernel launch. For each stage it gives the FLOPs, the compulsory DRAM
+traffic, the arithmetic intensity, and the two achieved rates against the
+measured roofs (4.06 TFLOP/s and 128 GB/s, ridge 31.7 FLOP/byte).
+
+It subtracts the `mx.eval` + `mx.synchronize` round trip, which is 0.13 to
+0.17 ms and dominates every small shape. A stage that does not clear the
+floor prints `at floor` and is marked LAUNCH.
+
+Two extra diagnostics print under each table:
+
+- **SDPA peak memory** against the operands alone. It says whether the
+  attention kernel wrote the `B x H x S x S` score matrix to DRAM.
+- **Strided against contiguous operands.** The head layout is a transpose,
+  and an MLX transpose is a free view, so the layout cost hides inside the
+  attention kernel. This pair separates the two.
+
+Compare `sum of stages` against `real per layer`. The sum is the larger
+number, because `mx.compile` fuses the elementwise stages and the GPU
+overlaps the layers. When the two are far apart, the stage model is wrong.
+
+### 4. Your own labels — find the slow layer
 
 ```python
 import sys; sys.path.insert(0, "profiling")

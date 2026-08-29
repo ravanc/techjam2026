@@ -8,15 +8,16 @@
     "torch_cpu_float32": 1.42
   },
   "torch_version": "2.13.0",
-  "elapsed_seconds": 503.5641737499973,
+  "elapsed_seconds": 559.4765987080755,
   "summary": {
     "cases_scored": 13,
-    "median_speedup_mlx": 6.077462466064414,
-    "min_speedup_mlx": 2.0627821434542715,
-    "max_speedup_mlx": 26.815770377466393,
-    "median_tflops_mlx": 1.2469436173238804,
-    "max_tflops_mlx": 3.3433529305645697
+    "median_speedup_mlx": 10.982404042081777,
+    "min_speedup_mlx": 3.6677472763093952,
+    "max_speedup_mlx": 31.95954891886024,
+    "median_tflops_mlx": 1.5613628624016236,
+    "max_tflops_mlx": 3.345591582835655
   },
+  "cpu_cached_cases": [],
   "cases": [
     {
       "case_id": 1,
@@ -31,23 +32,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
-        "cpu": 41.9751045,
-        "mps": 17.312541500000002,
-        "mlx": 6.8887915
+        "cpu": 61.251583499999995,
+        "mps": 17.94325,
+        "mlx": 5.501562
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.4245489606479786,
-        "mlx": 6.093246471460198
+        "mps": 3.413628161007621,
+        "mlx": 11.133489634398376
       },
       "tflops": {
-        "cpu": 0.20464355465749942,
-        "mps": 0.49616831774814807,
-        "mlx": 1.2469436173238804
+        "cpu": 0.140240204434878,
+        "mps": 0.47872791116436547,
+        "mlx": 1.5613628624016236
       },
       "accuracy": {
         "mps": {
@@ -58,12 +59,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.6689300537109375e-06,
           "failed_elements": 0,
           "total_elements": 1048576
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 2,
@@ -78,23 +80,23 @@
       },
       "flops": 134217728,
       "tokens": 128,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
-        "cpu": 1.5421874999999998,
-        "mps": 1.6351455,
-        "mlx": 0.747625
+        "cpu": 2.571104,
+        "mps": 1.889208,
+        "mlx": 0.650042
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 0.943150013255701,
-        "mlx": 2.0627821434542715
+        "mps": 1.3609427866068744,
+        "mlx": 3.9552890428618457
       },
       "tflops": {
-        "cpu": 0.08703074561296861,
-        "mps": 0.08208304887852488,
-        "mlx": 0.1795254679819428
+        "cpu": 0.052202372210536786,
+        "mps": 0.0710444419036972,
+        "mlx": 0.2064754708157319
       },
       "accuracy": {
         "mps": {
@@ -105,12 +107,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.0728836059570312e-06,
+          "max_abs_error": 9.5367431640625e-07,
           "failed_elements": 0,
           "total_elements": 16384
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 3,
@@ -125,23 +128,23 @@
       },
       "flops": 536870912,
       "tokens": 512,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
-        "cpu": 4.2689165,
-        "mps": 1.9951875000000001,
-        "mlx": 0.9564375
+        "cpu": 7.169396000000001,
+        "mps": 2.2174165,
+        "mlx": 0.8775
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.1396066785703094,
-        "mlx": 4.463351238319283
+        "mps": 3.2332202813499404,
+        "mlx": 8.170251851851853
       },
       "tflops": {
-        "cpu": 0.1257628046835772,
-        "mps": 0.2690829368167152,
-        "mlx": 0.5613235700189506
+        "cpu": 0.07488370177906199,
+        "mps": 0.24211550333462387,
+        "mlx": 0.6118187031339032
       },
       "accuracy": {
         "mps": {
@@ -152,12 +155,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.3113021850585938e-06,
+          "max_abs_error": 1.1920928955078125e-06,
           "failed_elements": 0,
           "total_elements": 65536
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 4,
@@ -172,23 +176,23 @@
       },
       "flops": 2147483648,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
-        "cpu": 12.705187500000001,
-        "mps": 4.658250000000001,
-        "mlx": 2.0905415
+        "cpu": 19.3734165,
+        "mps": 4.886834,
+        "mlx": 1.7640415
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.727459346321043,
-        "mlx": 6.077462466064414
+        "mps": 3.964410597945418,
+        "mlx": 10.982404042081777
       },
       "tflops": {
-        "cpu": 0.16902416024950437,
-        "mps": 0.4610065256265764,
-        "mlx": 1.0272379897744195
+        "cpu": 0.11084692511514424,
+        "mps": 0.43944272467613993,
+        "mlx": 1.2173657184368962
       },
       "accuracy": {
         "mps": {
@@ -199,12 +203,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.3113021850585938e-06,
+          "max_abs_error": 1.1920928955078125e-06,
           "failed_elements": 0,
           "total_elements": 262144
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 5,
@@ -219,23 +224,23 @@
       },
       "flops": 17179869184,
       "tokens": 16384,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 23,
       "rounds": 3,
       "median_ms": {
-        "cpu": 104.263125,
-        "mps": 33.359791,
-        "mlx": 13.570959
+        "cpu": 139.502458,
+        "mps": 35.015458,
+        "mlx": 11.264334
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.1254130159268683,
-        "mlx": 7.682811877922555
+        "mps": 3.984024941213106,
+        "mlx": 12.38443906226502
       },
       "tflops": {
-        "cpu": 0.16477416329119235,
-        "mps": 0.5149873146387518,
-        "mlx": 1.2659288989083233
+        "cpu": 0.12315101418499738,
+        "mps": 0.4906367120487186,
+        "mlx": 1.5251562306302353
       },
       "accuracy": {
         "mps": {
@@ -246,12 +251,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.6689300537109375e-06,
           "failed_elements": 0,
           "total_elements": 2097152
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 6,
@@ -266,23 +272,23 @@
       },
       "flops": 1342177280000,
       "tokens": 1280000,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
-        "cpu": 13698.770709,
-        "mps": 2680.809417,
-        "mlx": 1050.066208
+        "cpu": 14639.95975,
+        "mps": 2693.552792,
+        "mlx": 852.76025
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 5.109938297788365,
-        "mlx": 13.045625699251147
+        "mps": 5.435185749275636,
+        "mlx": 17.167732372610004
       },
       "tflops": {
-        "cpu": 0.09797793601422926,
-        "mps": 0.5006612075773681,
-        "mlx": 1.2781834800268137
+        "cpu": 0.0916790280109889,
+        "mps": 0.49829254655276867,
+        "mlx": 1.5739210170736733
       },
       "accuracy": {
         "mps": {
@@ -298,7 +304,8 @@
           "total_elements": 163840000
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 7,
@@ -313,23 +320,23 @@
       },
       "flops": 939524096,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
-        "cpu": 25.3013745,
-        "mps": 11.4005835,
-        "mlx": 4.761479
+        "cpu": 25.9588955,
+        "mps": 11.532896000000001,
+        "mlx": 1.3953545
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.219305222403748,
-        "mlx": 5.313763748616765
+        "mps": 2.2508566365291074,
+        "mlx": 18.603799607913256
       },
       "tflops": {
-        "cpu": 0.03713332238135916,
-        "mps": 0.08241017628615237,
-        "mlx": 0.19731770233576584
+        "cpu": 0.03619276082065972,
+        "mps": 0.0814647158874926,
+        "mlx": 0.6733228695646877
       },
       "accuracy": {
         "mps": {
@@ -345,7 +352,8 @@
           "total_elements": 262144
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 8,
@@ -360,23 +368,23 @@
       },
       "flops": 429496729600,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
-        "cpu": 471.857916,
-        "mps": 165.512958,
-        "mlx": 128.462875
+        "cpu": 470.854084,
+        "mps": 166.594792,
+        "mlx": 128.376916
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.850882019763069,
-        "mlx": 3.6731072381806804
+        "mps": 2.8263433589208478,
+        "mlx": 3.6677472763093952
       },
       "tflops": {
-        "cpu": 0.9102246990808139,
-        "mps": 2.594943228553743,
-        "mlx": 3.3433529305645697
+        "cpu": 0.912165242257939,
+        "mps": 2.5780921746941523,
+        "mlx": 3.345591582835655
       },
       "accuracy": {
         "mps": {
@@ -392,7 +400,8 @@
           "total_elements": 8388608
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 9,
@@ -407,23 +416,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
-        "cpu": 31.8975835,
-        "mps": 7.95275,
-        "mlx": 6.26825
+        "cpu": 35.0989795,
+        "mps": 7.9035835,
+        "mlx": 4.4383745
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 4.010887240262802,
-        "mlx": 5.088754197742592
+        "mps": 4.440894374051973,
+        "mlx": 7.908070736257159
       },
       "tflops": {
-        "cpu": 0.2692973463648116,
-        "mps": 1.0801212903712551,
-        "mlx": 1.3703880017548757
+        "cpu": 0.24473459668535377,
+        "mps": 1.086840493555866,
+        "mlx": 1.9353785021971446
       },
       "accuracy": {
         "mps": {
@@ -434,12 +443,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.6689300537109375e-06,
           "failed_elements": 0,
           "total_elements": 1048576
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 10,
@@ -454,23 +464,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
-        "cpu": 40.47625,
-        "mps": 12.9191875,
-        "mlx": 6.1508745000000005
+        "cpu": 46.1064795,
+        "mps": 13.077145999999999,
+        "mlx": 4.3464165
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.1330337143879987,
-        "mlx": 6.58056834032299
+        "mps": 3.5257295055052533,
+        "mlx": 10.607929428760452
       },
       "tflops": {
-        "cpu": 0.21222160135882154,
-        "mps": 0.6648974319785977,
-        "mlx": 1.3965387510345073
+        "cpu": 0.18630645161272832,
+        "mps": 0.6568661535169831,
+        "mlx": 1.9763256908305957
       },
       "accuracy": {
         "mps": {
@@ -486,7 +496,8 @@
           "total_elements": 1048576
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 11,
@@ -501,23 +512,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
-        "cpu": 125.7938965,
-        "mps": 41.9524995,
-        "mlx": 7.0611045
+        "cpu": 130.288729,
+        "mps": 42.5888545,
+        "mlx": 5.3418955
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.998483952070603,
-        "mlx": 17.815045294967664
+        "mps": 3.059221257054472,
+        "mlx": 24.389980859790313
       },
       "tflops": {
-        "cpu": 0.06828578198943062,
-        "mps": 0.20475382144989954,
-        "mlx": 1.2165142991439937
+        "cpu": 0.06592998993796309,
+        "mps": 0.20169442669560417,
+        "mlx": 1.6080311926730877
       },
       "accuracy": {
         "mps": {
@@ -533,7 +544,8 @@
           "total_elements": 1048576
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 12,
@@ -548,23 +560,23 @@
       },
       "flops": 1744830464,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
-        "cpu": 11.0518545,
-        "mps": 3.2318540000000002,
-        "mlx": 2.007187
+        "cpu": 12.223811999999999,
+        "mps": 3.2198960000000003,
+        "mlx": 1.4812500000000002
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.4196639142733547,
-        "mlx": 5.506140932558849
+        "mps": 3.7963375214603197,
+        "mlx": 8.252362531645568
       },
       "tflops": {
-        "cpu": 0.15787671327015754,
-        "mps": 0.5398852992740389,
-        "mlx": 0.8692914332346712
+        "cpu": 0.14274028952670414,
+        "mps": 0.5418903169543363,
+        "mlx": 1.1779446170464134
       },
       "accuracy": {
         "mps": {
@@ -575,12 +587,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.3113021850585938e-06,
+          "max_abs_error": 1.430511474609375e-06,
           "failed_elements": 0,
           "total_elements": 262144
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     },
     {
       "case_id": 13,
@@ -595,23 +608,23 @@
       },
       "flops": 188978561024,
       "tokens": 65536,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
-        "cpu": 1858.001042,
-        "mps": 564.827,
-        "mlx": 69.287625
+        "cpu": 1899.325375,
+        "mps": 577.590041,
+        "mlx": 59.429042
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.2895046483259476,
-        "mlx": 26.815770377466393
+        "mps": 3.2883624027028535,
+        "mlx": 31.95954891886024
       },
       "tflops": {
-        "cpu": 0.10171068624406078,
-        "mps": 0.33457777518425996,
-        "mlx": 2.727450407255264
+        "cpu": 0.09949772877856697,
+        "mps": 0.3271845904697654,
+        "mlx": 3.1799025302140995
       },
       "accuracy": {
         "mps": {
@@ -622,12 +635,13 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.6689300537109375e-06,
+          "max_abs_error": 1.5497207641601562e-06,
           "failed_elements": 0,
           "total_elements": 8388608
         }
       },
-      "failed": {}
+      "failed": {},
+      "cached": {}
     }
   ]
 }

@@ -24,6 +24,7 @@ Rules for this directory:
 
 | File | Subject |
 |---|---|
+| [../README.md](../README.md) | The result table, the current bottlenecks, and the layout |
 | [../OPTIMIZATIONS.md](../OPTIMIZATIONS.md) | Every optimization tried, kept or reverted, with numbers |
 | [../profiling/README.md](../profiling/README.md) | Instruments and Metal capture setup, and the platform quirks |
 | [../profiling/WORKFLOW.md](../profiling/WORKFLOW.md) | How to use the profiler to find the next optimization |
@@ -38,4 +39,7 @@ Rules for this directory:
 | `appendix_cases.py` | The 14 shapes as code, with per-case selection |
 | `flops.py` | The FLOP model, and the matmul rates measured here. |
 | `scoreboard.py` | The graded run: CPU/MPS/MLX timing for every shape. Writes `scoreboard.md` and appends `profiling/history.jsonl`. |
+| `steel_attention.py` | MLX's own flash attention kernel, compiled at a `head_dim` MLX does not ship. Row 25. |
+| `fast_layernorm.py` | A single-pass LayerNorm kernel for a row width under 256. Row 31. |
 | `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel, and when a pad into that set pays. |
+| `profiling/stage_roofline.py` | Splits one block into stages, times each, and names the limit: compute, IO or launch. |

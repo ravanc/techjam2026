@@ -233,6 +233,7 @@ class KernelPlan:
     batch_chunk: Optional[int]
     pad_head_dim: Optional[int] = None
     steel_attention: bool = False
+    fast_layer_norm: bool = False
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -241,7 +242,8 @@ class KernelPlan:
         return (
             f"fuse_qkv={self.fuse_qkv} causal_block={block} "
             f"batch_chunk={chunk} pad_head_dim={pad} "
-            f"steel={self.steel_attention}"
+            f"steel={self.steel_attention} "
+            f"fast_ln={self.fast_layer_norm}"
         )
 
 
@@ -315,6 +317,15 @@ MIN_BLOCK_SEQ = 64
 # See `OPTIMIZATIONS.md` rows 20 and 21.
 from steel_attention import steel_attention as steel_sdpa
 from steel_attention import supports as steel_supports
+
+# `mx.fast.layer_norm` loses throughput below a row width of 256: 33 GB/s at
+# d_model 128 and 5.5 GB/s at 32, against 108 GB/s for a plain copy.
+# `mx.fast.rms_norm` and `mx.mean` both hold full speed at those widths, so
+# the fault is the MLX LayerNorm kernel alone. `fast_layernorm.py` replaces
+# it with one coalesced read and two reductions over registers.
+# See OPTIMIZATIONS.md row 31.
+from fast_layernorm import layer_norm as fast_layer_norm
+from fast_layernorm import supports as fast_layer_norm_supports
 
 SDPA_FUSED_HEAD_DIMS = (64, 72, 80, 96, 128)
 SDPA_FUSED_MIN_HEAD_DIM = SDPA_FUSED_HEAD_DIMS[0]
@@ -447,12 +458,19 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     chunk = max(1, CHUNK_ACTIVATION_BYTES // max(1, per_sample))
     batch_chunk = chunk if chunk < config.batch_size else None
 
+    # The custom LayerNorm serves a row width under 256. At 256 and above
+    # `mx.fast.layer_norm` already reaches copy speed, so MLX keeps the work.
+    # The model casts to float32 before every LayerNorm, whatever the run
+    # dtype, so the test is on the width alone.
+    use_fast_ln = fast_layer_norm_supports(config.d_model, mx.float32)
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
         batch_chunk=batch_chunk,
         pad_head_dim=pad_head_dim,
         steel_attention=use_steel,
+        fast_layer_norm=use_fast_ln,
     )
 
 
@@ -540,8 +558,12 @@ def _mlx_transformer(
     """
     half = compute_dtype != mx.float32
 
+    # Pick the LayerNorm once, not once for each call. `plan.fast_layer_norm`
+    # comes from the shape. See `plan_kernels()`.
+    norm_kernel = fast_layer_norm if plan.fast_layer_norm else mx.fast.layer_norm
+
     def norm(value, weight, bias):
-        result = mx.fast.layer_norm(
+        result = norm_kernel(
             value.astype(mx.float32), weight, bias, LAYER_NORM_EPS
         )
         return result.astype(compute_dtype) if half else result
