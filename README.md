@@ -97,7 +97,7 @@ one extra pass over DRAM.
 | # | Bottleneck | Size | Why it is still open |
 |---:|---|---|---|
 | 33 | GELU runs as a separate memory pass | 1.01 ms for each layer and chunk, **7%** of shape 6 | The GELU kernel is efficient at 115 GB/s. The extra pass is the cost, and `mx.compile` does not fuse it. The steel GEMM header exposes an `apply_epilogue` hook, so the row 25 hoisting method can probably reach it |
-| 37 | Shape 8 cannot reach row 36 | about 1.6 ms of its 32.5 ms layer, **0.9%** FLOP-weighted | `mx.fast.layer_norm` takes no `pre_bias`, and `fast_layernorm` serves a row width under 256. A wide variant needs 32 floats per lane against 8 today, so register pressure is the open question |
+| 37 | Shape 8 cannot reach row 36 | 1.53 ms of its 32.51 ms layer, **1.0%** FLOP-weighted | `mx.fast.layer_norm` takes no `pre_bias`, and `fast_layernorm` serves a row width under 256. A wide variant needs 32 floats per lane against 8 today, so register pressure is the open question |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
 | — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Not worth the effort |
 
@@ -119,8 +119,8 @@ largest wins:
 |---:|---|---|
 | 1 | MLX behind the torch interface | 4.4x to 7.4x against torch CPU |
 | 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **1.308x** FLOP-weighted |
-| 31 | A single-pass LayerNorm kernel for a row width under 256 | **1.205x** FLOP-weighted |
 | 34 | Read q, k and v as strided views, and write the head layout directly | **1.239x** FLOP-weighted |
+| 31 | A single-pass LayerNorm kernel for a row width under 256 | **1.205x** FLOP-weighted |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **1.132x** FLOP-weighted |
 | 29 | `mx.addmm` for every projection, so the GPU adds the bias inside the matmul | 1.096x FLOP-weighted |
 | 7 | A shape-aware kernel plan (`KernelPlan`) | 1.57x at shape 13 |
@@ -143,6 +143,7 @@ Two of these are custom Metal kernels: `steel_attention.py` and
 | `bench_cases.py` | Deterministic input generation, shared by every backend |
 | `test_backends.py` | Cross-backend comparison: CPU, MPS, MLX |
 | `test_padding.py` | Padded and ragged batches, including an empty sample |
+| `profiling/WORKFLOW.md` | How to find the next optimization. Read it first |
 | `profiling/stage_roofline.py` | Splits one block into stages and names each limit |
 | `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel |
 | `references/` | Measured facts: the machine, the shapes, the MLX kernels, the scoreboard |
