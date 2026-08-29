@@ -404,8 +404,11 @@ the table.
 
 - **A hand-written Metal kernel by `mx.fast.metal_kernel`**, for the
   `head_dim = 8` case of section 3. This is the largest gap that remains.
-- **Fusing the GELU into the FFN matmuls.** Check first whether `mx.compile`
-  already does it.
+- **Fusing the GELU into the FFN matmuls.** DONE, as OPTIMIZATIONS.md row 33.
+  `mx.compile` does NOT do it: 2.237 ms compiled against 2.242 ms plain at
+  the shape 6 chunk. `steel_gemm.py` hoists MLX's steel GEMM and applies
+  GELU through the `apply_epilogue` hook in `steel/gemm/mma.h`, on the
+  accumulator tile in registers. 1.064x FLOP-weighted.
 - **`mx.quantize` on the linear layers.** It will fail the accuracy test.
   Measure the speed only.
 

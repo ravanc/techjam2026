@@ -55,6 +55,7 @@ from torch_transformer_benchmark import (
     _attention,
 )
 from fast_layernorm import layer_norm as fast_layer_norm
+from steel_gemm import steel_addmm
 
 MIB = 1024 * 1024
 ITEM = 4  # float32
@@ -309,11 +310,27 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
                            plan.causal_block, plan.steel_attention),
         sdpa_flops, 4 * qkv_act, path)
 
-    # 5. Merge the heads back. Pure data movement.
-    def build_merge():
-        c = ctx[..., :head_dim] if ctx.shape[-1] != head_dim else ctx
-        return c.transpose(0, 2, 1, 3).reshape(chunk, seq, d_model)
-    add("merge heads", build_merge, 0.0, 2 * act, "layout only")
+    # 5. Merge the heads back. Pure data movement, and FREE on the steel
+    # path: row 34 makes the kernel write [B, S, H, D], so the model merges
+    # with a plain reshape. An unconditional transpose here invents a copy
+    # the model never runs. It cost 1.06 ms of a claimed 14.60 ms shape 6
+    # layer, and it was most of the gap between the stage sum and the real
+    # layer time. Follow `_mlx_transformer()`.
+    if plan.steel_attention:
+        merge_note = "free reshape (row 34)"
+        merge_bytes = 0.0
+
+        def build_merge():
+            return ctx.reshape(chunk, seq, d_model)
+    else:
+        merge_note = "layout only"
+        merge_bytes = 2 * act
+
+        def build_merge():
+            c = ctx[..., :head_dim] if ctx.shape[-1] != head_dim else ctx
+            return c.transpose(0, 2, 1, 3).reshape(chunk, seq, d_model)
+
+    add("merge heads", build_merge, 0.0, merge_bytes, merge_note)
 
     # 6. Output projection. Row 36 gives it the residual as its C operand,
     # so it reads one more activation and the separate add disappears.
@@ -334,8 +351,24 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     # The FFN, for the share it takes of the block.
     add(norm_name.replace("ln0", "ln2"),
         lambda: do_norm(x1, "n2w", "n2b"), 0.0, 2 * act)
-    add("ffn_in + gelu",
-        lambda: mlx_nn.gelu(mx.addmm(layer["fib"], h2, layer["fiw"].T)),
+    # Profile the FFN input the PLAN selects. Row 33 folds GELU into the
+    # GEMM epilogue, so the fused path never writes the pre-activation to
+    # DRAM. A fixed `mlx_nn.gelu(mx.addmm(...))` here measures a kernel the
+    # model does not run.
+    if plan.fuse_gelu is not None:
+        bm, bn, bk, wm, wn = plan.fuse_gelu
+        ffn_in_name = "ffn_in + gelu (fused)"
+
+        def build_ffn_in():
+            return steel_addmm(layer["fib"], h2, layer["fiw"], gelu=True,
+                               bm=bm, bn=bn, bk=bk, wm=wm, wn=wn)
+    else:
+        ffn_in_name = "ffn_in + gelu"
+
+        def build_ffn_in():
+            return mlx_nn.gelu(mx.addmm(layer["fib"], h2, layer["fiw"].T))
+
+    add(ffn_in_name, build_ffn_in,
         2.0 * tokens * d_model * ffn,
         act + d_model * ffn * ITEM + tokens * ffn * ITEM)
     if defer:
@@ -509,7 +542,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shapes", default="1,6,8,13",
                         help="comma separated shape numbers")
-    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--repeats", type=int, default=100)
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
 

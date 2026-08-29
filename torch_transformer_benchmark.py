@@ -235,6 +235,9 @@ class KernelPlan:
     steel_attention: bool = False
     fast_layer_norm: bool = False
     defer_bias: bool = False
+    # The (bm, bn, bk, wm, wn) tile for the fused `ffn_in` + GELU kernel, or
+    # None to keep `mlx_nn.gelu(mx.addmm(...))`.
+    fuse_gelu: Optional[Tuple[int, int, int, int, int]] = None
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -245,7 +248,8 @@ class KernelPlan:
             f"batch_chunk={chunk} pad_head_dim={pad} "
             f"steel={self.steel_attention} "
             f"fast_ln={self.fast_layer_norm} "
-            f"defer_bias={self.defer_bias}"
+            f"defer_bias={self.defer_bias} "
+            f"fuse_gelu={'x'.join(map(str, self.fuse_gelu)) if self.fuse_gelu else 'none'}"
         )
 
 
@@ -258,6 +262,10 @@ class KernelPlan:
 #   chunk=  256  271.4 ms  3.86 GiB peak
 # Chunking is not slower. It is free insurance against the working set limit.
 CHUNK_ACTIVATION_BYTES = 64 * 1024 * 1024
+
+# The fused `ffn_in` + GELU kernel needs enough rows to fill the GPU. Below
+# this the launch dominates and MLX's pair wins. See `plan_kernels()`.
+MIN_FUSED_GELU_ROWS = 512
 
 # Blocked causal attention needs enough independent (batch x head) work to pay
 # for its extra kernel launches, and enough sequence to have a masked triangle
@@ -319,6 +327,11 @@ MIN_BLOCK_SEQ = 64
 # See `OPTIMIZATIONS.md` rows 20 and 21.
 from steel_attention import steel_attention as steel_sdpa
 from steel_attention import supports as steel_supports
+# The same hoisting trick as row 25, applied to MLX's steel GEMM. It gives
+# the matmul a GELU epilogue, so the FFN never writes the pre-activation to
+# DRAM and reads it back. See OPTIMIZATIONS.md row 33.
+from steel_gemm import choose_tile as steel_gemm_tile
+from steel_gemm import steel_addmm
 
 # `mx.fast.layer_norm` loses throughput below a row width of 256: 33 GB/s at
 # d_model 128 and 5.5 GB/s at 32, against 108 GB/s for a plain copy.
@@ -479,6 +492,23 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     # compile time flag, so the two graphs stay separate.
     use_defer_bias = use_fast_ln
 
+    # Fold GELU into the `ffn_in` GEMM epilogue. See OPTIMIZATIONS.md row 33.
+    #
+    # float32 only, because the hoisted kernel is compiled for float32. The
+    # tile must divide M, N and K, so the kernel takes its aligned path;
+    # `choose_tile()` returns None when no tile does, and the shape then
+    # keeps the MLX pair.
+    #
+    # A small M loses. Measured at the real `ffn_in` size of each shape,
+    # against `mlx_nn.gelu(mx.addmm(...))`:
+    #     M=128  0.81x   M=512  2.17x   M=2048 1.57x   M=8192 1.27x
+    #     M=16384 1.32x  M=65536 1.47x  M=131072 1.51x
+    # M=128 is shape 2, which is kernel launch bound end to end.
+    rows = (batch_chunk or config.batch_size) * config.seq_len
+    fuse_gelu = None
+    if itemsize == 4 and rows >= MIN_FUSED_GELU_ROWS:
+        fuse_gelu = steel_gemm_tile(rows, config.ffn_dim, config.d_model)
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
@@ -487,6 +517,7 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         steel_attention=use_steel,
         fast_layer_norm=use_fast_ln,
         defer_bias=use_defer_bias,
+        fuse_gelu=fuse_gelu,
     )
 
 
@@ -700,7 +731,16 @@ def _mlx_transformer(
             x = x + mx.addmm(layer["ob"], context, layer["ow"].T)
 
         h = norm(x, layer["n2w"], layer["n2b"], carry)
-        h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
+        if plan.fuse_gelu is not None and not half:
+            # One kernel, not two. The GELU runs on the accumulator tile in
+            # registers, so the pre-activation never reaches DRAM. `fiw` is
+            # [ffn_dim, d_model], which is the [N, K] layout the kernel
+            # takes directly, so pass it WITHOUT `.T`.
+            bm, bn, bk, wm, wn = plan.fuse_gelu
+            h = steel_addmm(layer["fib"], h, layer["fiw"], gelu=True,
+                            bm=bm, bn=bn, bk=bk, wm=wm, wn=wn)
+        else:
+            h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
         if defer:
             x = mx.addmm(x, h, layer["fow"].T)
             carry = carry + layer["fob"].astype(mx.float32)

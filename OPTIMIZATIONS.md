@@ -41,7 +41,7 @@ Status:
 | 21 | MLX never calls its own `bd192` and `bd256` kernels | **OPEN** (an MLX gap) | — | shape 8, `head_dim=256`, 21.3% of the FLOP-weighted score | the metallib holds `steel_attention_*_bd192_*` and `*_bd256_*` for all 3 dtypes. All 32 dispatch combinations tried take the fallback. No Python workaround: `head_dim` cannot pad down and a head cannot split. Recheck after an MLX upgrade |
 | 22 | Block a causal wide head that misses the fused set | **OPEN** | — | `head_dim > 128` and long `S`. No appendix shape reaches it | `head_dim=256`, B64 H4: S=128 full wins, S=512 blk128 gives 1.32x, S=1024 blk128 gives **1.55x**. `plan_kernels()` refuses to block because it tests `effective_head_dim < 64` |
 | 23 | Return the output as a view of MLX memory, not a copy | **KEPT** | `_to_torch()` L188 | every shape. float32 and float16 alias. bfloat16 and a device change still copy | **71.6 ms of 1590.2 ms at shape 6 (1.047x)**. 1.5 ms of 136 ms at shape 8. Bit exact by `torch.equal` |
-| 15 | Fused FFN | **OPEN** | — | every shape | not measured. Check `mx.compile` first |
+| 15 | Fused FFN | **KEPT**, as row 33 | `steel_gemm.py` | float32, `ffn_in`, rows >= 512 | `mx.compile` does NOT fuse the FFN: 2.237 ms compiled against 2.242 ms plain at the shape 6 chunk. Row 33 fuses it in the GEMM epilogue instead, for **1.064x FLOP-weighted** |
 | 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
 | 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L497, gated at `plan_kernels()` L430 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
 | 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **OPEN** | — | shape 8, 21.3% of the FLOP weight | not measured. `bq32_bk32_bd256` needs 68.5 KiB of threadgroup memory against a 32 KiB limit, and `bk16` still needs 41 KiB. `bk8` would fit. Shape 8 is only 7.6% attention, so the ceiling is small |
@@ -51,7 +51,7 @@ Status:
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
 | 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L570, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 32 | Give the attention kernel contiguous q, k and v | **REVERTED** | — | — | 1.02x, inside the noise floor: the `mx.contiguous` costs 3.29 ms and saves 3.41 ms. **Row 34 supersedes it and inverts it.** The 3.41 ms was never the read pattern. It was a hidden copy that `ensure_row_contiguous=True` ran inside the kernel launch. Do not make q, k and v contiguous. Tell the kernel their strides. This row also mislabelled its own measurement: see the detail section |
-| 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. **The steel GEMM header exposes an epilogue hook**, so the row 25 hoisting trick can probably reach it. See the detail section |
+| 33 | Fold GELU into the FFN matmul epilogue | **KEPT** | `steel_gemm.py` `steel_addmm()` L376, tile at `choose_tile()` L288; gated at `plan_kernels()` L508; used at `_mlx_transformer()` L734 | float32, `ffn_in` only, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13. Shape 2 keeps the MLX pair | **1.064x FLOP-weighted** (MLX 768.6 ms to 722.3 ms over the 13 shapes). Shape 6 **1.082x**, shape 3 1.068x, shape 5 1.042x, shape 7 1.042x, shape 13 1.030x, shape 8 1.009x. At the `ffn_in` stage alone: shape 7 **4.49x**, shape 6 1.51x, shape 13 1.47x. Control: MPS held at 1.005x across the two sweeps. All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. 18/18 padding cases pass |
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
@@ -1299,42 +1299,42 @@ shows no penalty because MLX's own SDPA never ran the extra copy. Only
 `steel_attention.py` did, and only because this project asked it to.
 
 
-## 33. Fold GELU into the FFN matmul epilogue — OPEN
+## 33. Fold GELU into the FFN matmul epilogue — KEPT
 
-Found by `profiling/stage_roofline.py`. The `ffn_in + gelu` stage reaches 45%
-of the matmul peak. `ffn_out` runs the same size matmul and reaches 80%. The
-difference is the GELU.
+`steel_gemm.py` hoists MLX's own steel GEMM out of its headers and compiles
+it at a new epilogue. The method is row 25's, applied to `steel/gemm/` in
+place of `steel/attn/`. `_mlx_transformer()` then runs ONE kernel where MLX
+ran two.
 
-Measured at the shape 6 chunk FFN size, 131072 rows by 128, a 64 MiB
-activation:
+### Why it was worth doing
+
+Found by `profiling/stage_roofline.py`. Every other stage of the shape 6
+block sits at 88% to 98% of a roof. `ffn_in + gelu` sat at 45.9%.
+
+Measured at the shape 6 chunk FFN size, 131072 rows by 128, 100 repeats:
 
 | step | ms |
 |---|---:|
-| `mx.addmm` alone | 1.417 |
-| `mx.addmm` then GELU | 2.385 |
-| GELU alone, on an evaluated input | 1.166 |
-| `mx.compile` of `gelu(addmm(...))` | 2.378 |
+| `mx.addmm` alone | 1.266 |
+| `mx.addmm` then GELU | 2.242 |
+| GELU alone, on an evaluated input | 1.013 |
+| `mx.compile` of `gelu(addmm(...))` | 2.237 |
 
-GELU adds 0.968 ms. A separate read plus write of 64 MiB at the measured
-128 GB/s roof costs 1.049 ms. The two agree, so GELU is exactly one extra
+GELU added 0.977 ms. A separate read plus write of 64 MiB at the measured
+128 GB/s roof costs 1.049 ms. The two agree, so GELU was exactly one extra
 pass over DRAM.
 
-The GELU kernel is not slow. Alone it reaches 115 GB/s, which is 90% of the
-copy roof. The cost is the pass itself, not the arithmetic.
+The GELU kernel was never slow. Alone it reached 132.5 GB/s, which is above
+the 128 GB/s copy roof for this size. The cost was the pass itself.
 
-**`mx.compile` does not fuse it.** 2.378 ms compiled against 2.385 ms plain
+**`mx.compile` does not fuse it.** 2.237 ms compiled against 2.242 ms plain
 is inside the noise. MLX fuses elementwise chains, but it does not fuse an
-elementwise operation into a GEMM epilogue.
+elementwise operation into a GEMM epilogue. This also closes the
+"check `mx.compile` first" note on row 15.
 
-At shape 6 this is 0.968 ms for each layer and each chunk, so 4 layers by 10
-chunks is 38.7 ms of the 852.8 ms runtime, or **4.5%**.
+### The hook
 
-### The steel GEMM does expose an epilogue hook
-
-An earlier version of this section said MLX exposes no matmul epilogue, and
-that the path may not be reachable. **That was wrong.** I checked the headers.
-
-`steel/gemm/mma.h` line 595 holds this:
+`steel/gemm/mma.h` line 593 holds a UNARY epilogue:
 
     template <typename UnaryEpilogue>
     METAL_FUNC void apply_epilogue(
@@ -1344,32 +1344,129 @@ that the path may not be reachable. **That was wrong.** I checked the headers.
       }
     }
 
-`Ctile` is the accumulator tile. It sits in registers, before the kernel
-writes it to memory. So the hook applies a caller's operation at exactly the
-point that removes the extra pass.
+`Ctile` is the accumulator, in registers, before the store. The kernel
+already calls the BINARY form, `apply_epilogue(C, ldc, fdc, TransformAdd)`,
+which is how `mx.addmm` adds the bias. `steel_gemm.py` adds a `TransformGelu`
+and calls the unary form straight after, at all four exit paths. So the
+order is: accumulate, add the bias, apply GELU, store. The extra pass is
+gone.
 
-`steel/gemm/transforms.h` holds the structs that already use the hook:
-`TransformNone`, `TransformAdd` and `TransformAxpby`. `TransformAdd` is how
-`mx.addmm` adds the bias inside the matmul, which row 29 already measured at
-1.096x. A `TransformGelu` takes the same form:
+### Five edits to Apple's kernel, and no others
 
-    template <typename OutT, typename InT>
-    struct TransformGelu {
-      static METAL_FUNC OutT apply(InT x) { ... }
-    };
+1. `[[kernel]]` becomes a plain function, so it can be a callee.
+2. The `[[function_constant]]` flags become `constexpr bool`.
+3. `constant GEMMParams*` becomes `thread GEMMParams*`.
+4. The `threadgroup` arrays move to the caller.
+5. The `has_batch` branch goes. This module never batches, and Metal type
+   checks a dead branch: that branch reads `batch_strides` through
+   `const constant auto*`, and a hoisted callee gets `thread` pointers.
 
-So the arithmetic is a few lines, and it goes in a place the template already
-provides.
+The arithmetic is Apple's. See the `steel_gemm.py` docstring.
 
-**What is still unproven.** Row 25 hoisted `steel/attn/`, and the attention
-kernel is one template. The GEMM is larger: `steel_gemm_fused.h`,
-`steel_gemm_splitk.h` and `steel_gemm_masked.h` are separate kernels, and
-`plan_kernels()` would have to pick the right one for each shape. Nobody has
-compiled the steel GEMM through `mx.fast.metal_kernel` yet.
+### The GEMM is not larger than the attention kernel
 
-**The row stays OPEN.** The prize is 4.5% of shape 6. The hook exists, and
-row 25 proves the hoisting method works on MLX's steel headers. The open
-question is the size of the GEMM, not whether the epilogue is reachable.
+An earlier version of this section warned that the GEMM would be a bigger
+job than row 25, because `steel_gemm_fused.h`, `steel_gemm_splitk.h` and
+`steel_gemm_masked.h` are separate kernels. **That was wrong on both counts.**
+
+The header chain is the same size, because row 25 already inlines the four
+shared `steel/` headers and `steel/gemm/params.h`:
+
+| Hoist | kernel-specific headers | kernel file | total |
+|---|---:|---:|---:|
+| `steel/attn/` (row 25) | 1199 | 476 | 1675 |
+| `steel/gemm/` (row 33) | 1432 | 346 | 1778 |
+
+And only one of the three kernels matters. `splitk` serves a small M with a
+large K, and `masked`, `gather` and `segmented` serve other operations.
+`ffn_in` is a plain `[M, K] @ [K, N]` with a bias, so `steel_gemm_fused` is
+the only file to hoist.
+
+### The plain path is bit exact
+
+With `gelu=False` the hoisted kernel reproduces `mx.addmm` exactly:
+`mx.array_equal` is True and `max_abs` is 0.0. That was the gate. It proves
+the hoist itself is faithful, before any new arithmetic goes in.
+
+### GELU is 1 ULP off, and cannot be closer
+
+`mlx_nn.gelu` is `x * (1 + mx.erf(x / sqrt(2))) / 2`. `steel_gemm.py` inlines
+MLX's own `erf.h`, so both call the SAME approximation. The result still
+differs by 1 ULP, and three expression orders all give the same 4.77e-07:
+
+| form | max_abs | differing |
+|---|---:|---:|
+| `x * 0.5f * (1 + erf(x * 0.70710678f))` | 4.768e-07 | 140462 / 1048576 |
+| `(x * (1 + erf(x / 1.41421356f))) / 2` | 4.768e-07 | 147929 / 1048576 |
+| the same with `metal::precise::divide` | 4.768e-07 | 147929 / 1048576 |
+
+So the difference is the JIT's math flags, not the expression. The first
+form has the fewest differing elements, so it is the one in the code.
+4.77e-07 is 4000 times inside the harness `atol=0.002`, and the model's
+`max_abs` was already 2.65e-06 before this row.
+
+### The tile
+
+`choose_tile()` takes the first tile that divides M, N and K, so the kernel
+always runs its aligned path. Measured at the shape 6 `ffn_in` size, against
+2.300 ms for the MLX pair:
+
+    bm32 bn64  1.527 ms      bm64 bn32  1.531 ms     bm32 bn32  1.593 ms
+    bm64 bn64  1.648 ms      bm64 bn128 1.907 ms     bm128 bn64 1.947 ms
+
+### The row threshold
+
+Measured at the real `ffn_in` size of each shape, fused against the MLX pair:
+
+| rows | M | K | N | MLX ms | fused ms | speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| shape 2 | 128 | 128 | 128 | 0.0500 | 0.0615 | **0.81x** |
+| shape 3 | 512 | 128 | 128 | 0.0855 | 0.0395 | 2.17x |
+| shapes 4, 12 | 2048 | 128 | 128 | 0.0749 | 0.0477 | 1.57x |
+| shapes 1, 9, 10, 11 | 8192 | 128 | 128 | 0.1785 | 0.1403 | 1.27x |
+| shape 5 | 16384 | 128 | 128 | 0.2952 | 0.2244 | 1.32x |
+| shape 13 | 65536 | 128 | 128 | 1.1943 | 0.8142 | 1.47x |
+| shape 6 chunk | 131072 | 128 | 128 | 2.2957 | 1.5259 | 1.51x |
+| shape 7 | 8192 | 32 | 32 | 0.1503 | 0.0335 | **4.49x** |
+| shape 8 | 8192 | 1024 | 1024 | 4.7809 | 4.4603 | 1.07x |
+
+Only M=128 loses, so `MIN_FUSED_GELU_ROWS` is 512. Shape 2 is the only
+shape below it, and it is kernel launch bound end to end.
+
+Shape 7 gains 4.49x because MLX's GEMM is poor at K=N=32, not because the
+epilogue saves more there.
+
+### The model level result
+
+    .venv/bin/python3 scoreboard.py --cpu-cache --label "row 33: fold GELU into the ffn_in GEMM epilogue"
+
+**1.064x FLOP-weighted**, MLX 768.6 ms to 722.3 ms over the 13 shapes.
+
+| case | FLOP weight | MLX before | MLX after | speedup | MPS control |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.4% | 3.788 | 3.656 | 1.036x | 1.002x |
+| 2 | 0.0% | 0.652 | 0.634 | 1.029x | 1.106x |
+| 3 | 0.0% | 0.757 | 0.709 | 1.068x | 1.021x |
+| 4 | 0.1% | 1.375 | 1.337 | 1.029x | 1.007x |
+| 5 | 0.9% | 7.359 | 7.065 | 1.042x | 1.004x |
+| **6** | **66.5%** | 567.842 | 524.885 | **1.082x** | 1.009x |
+| 7 | 0.0% | 1.124 | 1.079 | 1.042x | 0.984x |
+| 8 | 21.3% | 127.557 | 126.408 | 1.009x | 0.996x |
+| 9 | 0.4% | 3.923 | 3.861 | 1.016x | 0.989x |
+| 10 | 0.4% | 3.850 | 3.742 | 1.029x | 0.995x |
+| 11 | 0.4% | 3.850 | 3.754 | 1.026x | 0.995x |
+| 12 | 0.1% | 1.309 | 1.285 | 1.018x | 0.975x |
+| 13 | 9.4% | 45.231 | 43.893 | 1.030x | 0.992x |
+
+MPS summed 3533.9 ms against 3515.3 ms across the two sweeps, which is
+1.005x. So the machine did not change and the gain is the kernel.
+
+Shape 2 moved 1.029x with `fuse_gelu=None`, so that is the noise floor of
+this pair of sweeps, not an effect.
+
+All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. `test_padding.py` passes
+18 of 18; its third shape (B4 S128, ffn 512) gives 512 rows and does select
+the fused tile.
 
 ## 34. Read q, k and v as strided views, and write the head layout directly — KEPT
 

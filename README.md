@@ -60,45 +60,44 @@ and the machine holds 12.0 GiB, so no backend runs it here.
 
 ## Current bottlenecks
 
-Measured with `profiling/stage_roofline.py` after row 36. Shape 6 carries
+Measured with `profiling/stage_roofline.py` after row 33. Shape 6 carries
 66.5% of the FLOP weight: one layer, one chunk of 1024 rows, real layer time
-**14.22 ms**. The roofs are 4.06 TFLOP/s and 128 GB/s, both measured here.
+**13.75 ms**. The roofs are 4.06 TFLOP/s and 128 GB/s, both measured here.
 
 | Stage | ms | share | Limit | Against its own roof | Headroom |
 |---|---:|---:|---|---:|---|
-| qkv proj | 3.61 | 24% | COMPUTE | 88% of matmul peak | little |
-| sdpa (attention) | 2.39 | 16% | IO | 88% of bandwidth | little. Row 34 took it |
-| ffn_in + gelu | 2.34 | 15% | COMPUTE | 45% of matmul peak | **1.01 ms. Row 33** |
-| ffn_out (+residual) | 1.69 | 11% | IO | 93% of bandwidth | none. Row 36 took it |
-| out proj (+residual) | 1.69 | 11% | IO | 93% of bandwidth | none. Row 36 took it |
-| ln1 + ln2 | 2.28 | 15% | IO | 92% of bandwidth | none. Rows 31 and 36 took it |
-| merge heads | 1.14 | 8% | IO | 92% of bandwidth | none |
+| qkv proj | 3.82 | 29% | COMPUTE | 83% of matmul peak | little |
+| sdpa (attention) | 2.20 | 17% | IO | 95% of bandwidth | none. Row 34 took it |
+| out proj (+residual) | 1.68 | 13% | IO | 94% of bandwidth | none. Row 36 took it |
+| ffn_out (+residual) | 1.67 | 13% | IO | 94% of bandwidth | none. Row 36 took it |
+| ffn_in + gelu (fused) | 1.47 | 11% | COMPUTE | 72% of matmul peak | little. Row 33 took it |
+| ln1 + ln2 | 2.12 | 16% | IO | 97% of bandwidth | none. Rows 31 and 36 took it |
+| merge heads | free | — | — | a reshape, not a copy | — |
 | split+transpose | free | — | — | a strided view, not a copy | — |
 
-Row 36 removed the two separate residual adds, so the block is nine stages,
-not eleven. **Seven of the eight measurable stages now run at 87% or more of
-the roof that binds them.** The ninth, `split+transpose`, sits at the launch
-floor because it is a view, not work.
+Row 36 removed the two separate residual adds and row 33 removed the GELU
+pass, so the block is eight stages, not eleven. **Every measurable stage now
+runs at 72% or more of the roof that binds them, and five of the six run at
+83% or more.** The two free stages sit at the launch floor because they are
+views, not work.
 
-`ffn_in + gelu` is the one stage with real headroom. Compare it against
-`ffn_out`, which does the **same** 4.295 GFLOP:
+Row 33 was the last stage with real headroom. It ran at 45.9% of the matmul
+peak, because GELU was a separate kernel and cost a whole extra read plus
+write of the activation. `steel_gemm.py` hoists MLX's steel GEMM and applies
+GELU to the accumulator tile in registers instead:
 
-| | GFLOP | MiB moved | ms |
-|---|---:|---:|---:|
-| `ffn_in + gelu` | 4.295 | 128.1 | 2.34 |
-| `ffn_out (+residual)` | 4.295 | 192.1 | 1.69 |
-
-`ffn_out` moves 50% more bytes, because it now carries the residual too, and
-it still finishes 0.65 ms sooner. The whole difference is the GELU, which is
-one extra pass over DRAM.
+| `ffn_in` at the shape 6 chunk | ms | % of matmul peak |
+|---|---:|---:|
+| `mlx_nn.gelu(mx.addmm(...))` | 2.30 | 45.9 |
+| fused epilogue | **1.47** | **71.9** |
 
 ### What is still open
 
 | # | Bottleneck | Size | Why it is still open |
 |---:|---|---|---|
-| 33 | GELU runs as a separate memory pass | 1.01 ms for each layer and chunk, **7%** of shape 6 | The GELU kernel is efficient at 115 GB/s. The extra pass is the cost, and `mx.compile` does not fuse it. The steel GEMM header exposes an `apply_epilogue` hook, so the row 25 hoisting method can probably reach it |
 | 37 | Shape 8 cannot reach row 36 | 1.53 ms of its 32.51 ms layer, **1.0%** FLOP-weighted | `mx.fast.layer_norm` takes no `pre_bias`, and `fast_layernorm` serves a row width under 256. A wide variant needs 32 floats per lane against 8 today, so register pressure is the open question |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
+| — | qkv proj | 3.82 ms, 29% of the shape 6 layer | It is the largest stage, but it already runs at 83% of the matmul peak. It holds 43% of the block FLOPs because it is three projections in one |
 | — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Not worth the effort |
 
 Shape 8 is the exception to all of this. It is genuinely compute-bound: its
