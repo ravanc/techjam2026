@@ -12,7 +12,7 @@ FLOP count comes from the model definition, not from a specification.
 - CPU is the reference for both accuracy and speedup.
 - Each call is bracketed by a device synchronize. Rounds alternate the
   backend order, so no backend always runs on a cold chip.
-- sweep took 8.7 minutes
+- sweep took 10.4 minutes
 
 MFU appears once, in its own section, and it is provisional. See
 [../flops.py](../flops.py).
@@ -21,19 +21,19 @@ MFU appears once, in its own section, and it is provisional. See
 
 | # | Shape | CPU ms | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 49.136 | 17.310 | 10.141 | 2.84x | **4.85x** | 1.71x |
-| 2 | B1 D128 H4 S128 | 1.564 | 1.553 | 0.780 | 1.01x | **2.00x** | 1.99x |
-| 3 | B4 D128 H4 S128 | 4.443 | 2.009 | 1.130 | 2.21x | **3.93x** | 1.78x |
-| 4 | B16 D128 H4 S128 | 12.699 | 4.700 | 2.495 | 2.70x | **5.09x** | 1.88x |
-| 5 | B128 D128 H4 S128 | 113.207 | 34.555 | 20.527 | 3.28x | **5.51x** | 1.68x |
-| 6 | B10000 D128 H4 S128 | 13601.131 | 2720.155 | 1677.834 | 5.00x | **8.11x** | 1.62x |
-| 7 | B64 D32 H4 S128 | 29.107 | 11.534 | 7.100 | 2.52x | **4.10x** | 1.62x |
-| 8 | B64 D1024 H4 S128 | 467.508 | 166.502 | 137.555 | 2.81x | **3.40x** | 1.21x |
-| 9 | B64 D128 H1 S128 | 36.296 | 8.013 | 7.243 | 4.53x | **5.01x** | 1.11x |
-| 10 | B64 D128 H2 S128 | 42.480 | 12.931 | 7.041 | 3.29x | **6.03x** | 1.84x |
-| 11 | B64 D128 H16 S128 | 129.809 | 42.302 | 17.257 | 3.07x | **7.52x** | 2.45x |
-| 12 | B64 D128 H4 S32 | 11.788 | 3.425 | 2.386 | 3.44x | **4.94x** | 1.44x |
-| 13 | B64 D128 H4 S1024 | 1864.557 | 568.610 | 182.790 | 3.28x | **10.20x** | 3.11x |
+| 1 | B64 D128 H4 S128 | 48.295 | 17.333 | 9.966 | 2.79x | **4.85x** | 1.74x |
+| 2 | B1 D128 H4 S128 | 1.767 | 1.663 | 0.775 | 1.06x | **2.28x** | 2.15x |
+| 3 | B4 D128 H4 S128 | 5.260 | 2.017 | 1.128 | 2.61x | **4.66x** | 1.79x |
+| 4 | B16 D128 H4 S128 | 12.757 | 4.732 | 2.507 | 2.70x | **5.09x** | 1.89x |
+| 5 | B128 D128 H4 S128 | 110.068 | 33.998 | 20.236 | 3.24x | **5.44x** | 1.68x |
+| 6 | B10000 D128 H4 S128 | 18942.688 | 2792.548 | 1772.615 | 6.78x | **10.69x** | 1.58x |
+| 7 | B64 D32 H4 S128 | 26.652 | 11.299 | 6.945 | 2.36x | **3.84x** | 1.63x |
+| 8 | B64 D1024 H4 S128 | 464.375 | 165.389 | 135.822 | 2.81x | **3.42x** | 1.22x |
+| 9 | B64 D128 H1 S128 | 32.091 | 7.906 | 7.051 | 4.06x | **4.55x** | 1.12x |
+| 10 | B64 D128 H2 S128 | 38.433 | 12.589 | 6.935 | 3.05x | **5.54x** | 1.82x |
+| 11 | B64 D128 H16 S128 | 124.519 | 41.939 | 17.074 | 2.97x | **7.29x** | 2.46x |
+| 12 | B64 D128 H4 S32 | 9.453 | 3.384 | 2.407 | 2.79x | **3.93x** | 1.41x |
+| 13 | B64 D128 H4 S1024 | 1997.648 | 562.967 | 111.195 | 3.55x | **17.97x** | 5.06x |
 
 ## Achieved arithmetic rate
 
@@ -43,19 +43,19 @@ matmul, torch MPS 4.16, torch CPU 1.42.
 
 | # | Shape | GFLOP | CPU TFLOP/s | MPS TFLOP/s | **MLX TFLOP/s** | MLX token/s | Plan chosen |
 |---:|---|---:|---:|---:|---:|---:|---|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.175 | 0.496 | **0.847** | 807,845 | fuse_qkv=True causal_block=64 batch_chunk=none |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.086 | 0.086 | **0.172** | 164,024 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 3 | B4 D128 H4 S128 | 0.54 | 0.121 | 0.267 | **0.475** | 453,248 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.169 | 0.457 | **0.861** | 820,945 | fuse_qkv=True causal_block=64 batch_chunk=none |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.152 | 0.497 | **0.837** | 798,154 | fuse_qkv=True causal_block=64 batch_chunk=none |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 0.099 | 0.493 | **0.800** | 762,888 | fuse_qkv=True causal_block=64 batch_chunk=1024 |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.032 | 0.081 | **0.132** | 1,153,769 | fuse_qkv=True causal_block=32 batch_chunk=none |
-| 8 | B64 D1024 H4 S128 | 429.50 | 0.919 | 2.580 | **3.122** | 59,554 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.237 | 1.072 | **1.186** | 1,130,948 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.202 | 0.664 | **1.220** | 1,163,499 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.066 | 0.203 | **0.498** | 474,701 | fuse_qkv=True causal_block=32 batch_chunk=none |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.148 | 0.509 | **0.731** | 858,355 | fuse_qkv=True causal_block=full batch_chunk=none |
-| 13 | B64 D128 H4 S1024 | 188.98 | 0.101 | 0.332 | **1.034** | 358,532 | fuse_qkv=True causal_block=64 batch_chunk=none |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.178 | 0.496 | **0.862** | 822,002 | fuse_qkv=True causal_block=64 batch_chunk=none pad_head_dim=none |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.076 | 0.081 | **0.173** | 165,197 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 3 | B4 D128 H4 S128 | 0.54 | 0.102 | 0.266 | **0.476** | 453,892 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.168 | 0.454 | **0.857** | 817,028 | fuse_qkv=True causal_block=64 batch_chunk=none pad_head_dim=none |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.156 | 0.505 | **0.849** | 809,658 | fuse_qkv=True causal_block=64 batch_chunk=none pad_head_dim=none |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 0.071 | 0.481 | **0.757** | 722,097 | fuse_qkv=True causal_block=64 batch_chunk=1024 pad_head_dim=none |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.035 | 0.083 | **0.135** | 1,179,497 | fuse_qkv=True causal_block=32 batch_chunk=none pad_head_dim=none |
+| 8 | B64 D1024 H4 S128 | 429.50 | 0.925 | 2.597 | **3.162** | 60,314 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.268 | 1.087 | **1.218** | 1,161,876 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.224 | 0.682 | **1.239** | 1,181,201 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.069 | 0.205 | **0.503** | 479,802 | fuse_qkv=True causal_block=32 batch_chunk=none pad_head_dim=none |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.185 | 0.516 | **0.725** | 850,984 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none |
+| 13 | B64 D128 H4 S1024 | 188.98 | 0.095 | 0.336 | **1.700** | 589,376 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=64 |
 
 ## MFU — PROVISIONAL, do not quote without this note
 
@@ -69,22 +69,22 @@ number in this table scales linearly with it. Fix the constant in
 
 | # | Shape | GFLOP | FLOP share | MLX MFU | MPS MFU |
 |---:|---|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 16.9% | 9.9% |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 3.4% | 1.7% |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 17.2% | 9.9% |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 3.5% | 1.6% |
 | 3 | B4 D128 H4 S128 | 0.54 | 0.0% | 9.5% | 5.3% |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 17.2% | 9.1% |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 16.7% | 9.9% |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 16.0% | 9.8% |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 2.6% | 1.6% |
-| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 62.3% | 51.5% |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 23.7% | 21.4% |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 24.4% | 13.3% |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 9.9% | 4.1% |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 14.6% | 10.2% |
-| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 20.6% | 6.6% |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 17.1% | 9.1% |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 16.9% | 10.1% |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 15.1% | 9.6% |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 2.7% | 1.7% |
+| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 63.1% | 51.8% |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 24.3% | 21.7% |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 24.7% | 13.6% |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 10.0% | 4.1% |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 14.5% | 10.3% |
+| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 33.9% | 6.7% |
 
-- unweighted mean MLX MFU: **18.30%**
-- FLOP-weighted mean MLX MFU: **26.32%**
+- unweighted mean MLX MFU: **19.43%**
+- FLOP-weighted mean MLX MFU: **27.17%**
 
 Shape 6 alone is two thirds of the FLOP weight, so a FLOP-weighted
 score is mostly a score on shape 6.
@@ -114,10 +114,10 @@ Against the CPU baseline, at `atol=0.002` and `rtol=0.02`.
 | Metric | Value |
 |---|---:|
 | Shapes scored | 13 |
-| Median MLX speedup over CPU | **5.01x** |
-| Range of MLX speedup | 2.00x to 10.20x |
-| Median MLX rate | 0.837 TFLOP/s |
-| Best MLX rate | 3.122 TFLOP/s |
+| Median MLX speedup over CPU | **4.85x** |
+| Range of MLX speedup | 2.28x to 17.97x |
+| Median MLX rate | 0.849 TFLOP/s |
+| Best MLX rate | 3.162 TFLOP/s |
 
 ## History
 
@@ -127,6 +127,8 @@ Print it with `.venv/bin/python3 scoreboard.py --show-history`.
 | When | Commit | Label | Shapes | Median speedup | Median TFLOP/s |
 |---|---|---|---:|---:|---:|
 | 2026-08-29T11:11:06 | `b37a558*` | attempts 1-11, full sweep | 13 | 5.01x | 0.837 |
+| 2026-08-29T11:39:59 | `6f6cfce*` | pad head_dim to 64 to reach the fused SDPA kernel | 13 | 4.76x | 0.797 |
+| 2026-08-29T12:05:46 | `6f6cfce*` | pad head_dim to 64, gated to rho<=2 and S>=4D (shape 13 only) | 13 | 4.85x | 0.849 |
 
 A `*` on the commit means the working tree had uncommitted changes,
 so that reading cannot be reproduced exactly.

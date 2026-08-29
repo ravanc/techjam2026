@@ -212,11 +212,16 @@ class KernelPlan:
     fuse_qkv: bool
     causal_block: Optional[int]
     batch_chunk: Optional[int]
+    pad_head_dim: Optional[int] = None
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
         chunk = self.batch_chunk if self.batch_chunk else "none"
-        return f"fuse_qkv={self.fuse_qkv} causal_block={block} batch_chunk={chunk}"
+        pad = self.pad_head_dim if self.pad_head_dim else "none"
+        return (
+            f"fuse_qkv={self.fuse_qkv} causal_block={block} "
+            f"batch_chunk={chunk} pad_head_dim={pad}"
+        )
 
 
 # One activation of this size per batch chunk. 64 MiB keeps the live set of a
@@ -234,6 +239,48 @@ CHUNK_ACTIVATION_BYTES = 64 * 1024 * 1024
 # worth skipping.
 MIN_BLOCK_PARALLEL = 64
 MIN_BLOCK_SEQ = 64
+
+# `mx.fast.scaled_dot_product_attention` dispatches to its fused (flash)
+# kernel ONLY for head_dim in [64, 128]. Outside that range it accepts the
+# call, returns a correct answer, and silently uses a fallback that
+# materializes the whole B x H x S x S score matrix.
+#
+# Measured by peak GPU memory at B=8, H=8, S=2048, where the score matrix
+# would be 1024 MiB. `peak - base`, in MiB:
+#
+#   head_dim    8     16     32     48     64     72     96    128    256
+#   peak MiB  1048   1068   1108   1148    128    144    192    256   1668
+#   path      fall   fall   fall   fall  FUSED  FUSED  FUSED  FUSED   fall
+#
+# This is the cause of the 18x spread of SDPA efficiency against head_dim
+# (78 GFLOP/s at 8, 270 at 32, 830 at 64, 1390 at 128, 760 at 256). It is
+# not a curve. It is a cliff between two implementations.
+#
+# Padding head_dim up to 64 with zeros crosses onto the fused kernel. It is
+# exact in exact arithmetic: zeros in q and k add nothing to the dot
+# product, zeros in v add nothing to the output, the extra output columns
+# are discarded, and `scale` stays at the TRUE head_dim so the softmax does
+# not move. The padding is folded into the QKV weight, so the projection
+# writes the wide layout directly and no extra pass over the data is needed.
+#
+# WHY IT WINS: not arithmetic. The padded path does MORE arithmetic. The
+# fallback writes the B x H x S x S score matrix to DRAM and reads it back
+# two or three times; the fused kernel keeps the score tile in registers
+# and never writes it. At shape 13 that matrix is 1.000 GiB per layer
+# against 96 MiB of q, k, v operands, a ratio of 10.7x. Four layers at two
+# or three passes is 8 to 12 GiB, which is 57 to 86 ms at the 150 GB/s of
+# this machine. The measured saving is 71.6 ms. The pad costs 8.6 ms of
+# extra QKV projection. That trade is the whole optimization.
+#
+# The score matrix is S x S and the operands are S x head_dim, so the
+# traffic removed scales with S / head_dim. That is why the gate needs a
+# long sequence, and why head_dim = 8 cannot use it: reaching 64 from 8
+# needs an 8x wider projection, which no sequence length repays.
+#
+# `OPTIMIZATIONS.md` attempt 11 padded 8 up to 32 and reverted it. 32 is
+# still on the fallback path, which is why it failed. The target is 64.
+SDPA_FUSED_MIN_HEAD_DIM = 64
+SDPA_FUSED_MAX_HEAD_DIM = 128
 
 
 def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
@@ -287,21 +334,51 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     head_dim = config.d_model // config.num_heads
     parallel = config.batch_size * config.num_heads
 
+    # Cross onto the fused SDPA kernel when the head is too narrow for it.
+    # See SDPA_FUSED_MIN_HEAD_DIM. Two conditions gate it, and a full sweep
+    # measured both. A blanket `head_dim < 64` rule LOSES: it gave 0.983x
+    # FLOP-weighted, because it pays the pad on shapes that cannot use it.
+    #
+    # 1. The pad factor `64 / head_dim` must be at most 2. The pad widens
+    #    the QKV projection by that factor, and the projection is 6*D*D of
+    #    the 12*D*D + 4*S*D per-token cost. At head_dim=8 the factor is 8
+    #    and no attention rate recovers it: shape 11 measured 0.756x and
+    #    shape 7 measured 0.894x.
+    # 2. Attention must dominate the layer, which needs a long sequence
+    #    against the model width. Attention is 4*S*D per token against
+    #    6*D*D for the projection, so the ratio is 2*S/(3*D). Shapes with
+    #    S == D measured 0.93x to 1.11x, which is inside the noise floor.
+    #
+    # The threshold sits at S >= 4*D, between shape 1 (S = D, no gain) and
+    # shape 13 (S = 8*D, 1.65x). **It rests on one measured point.** Sweep
+    # S at fixed D before you move it. See OPTIMIZATIONS.md row 17.
+    pad_head_dim: Optional[int] = None
+    if (
+        head_dim < SDPA_FUSED_MIN_HEAD_DIM
+        and SDPA_FUSED_MIN_HEAD_DIM <= 2 * head_dim
+        and config.seq_len >= 4 * config.d_model
+    ):
+        pad_head_dim = SDPA_FUSED_MIN_HEAD_DIM
+    effective_head_dim = pad_head_dim or head_dim
+
     causal_block: Optional[int] = None
     if (
         config.causal
-        and head_dim < 64
+        and effective_head_dim < 64
         and config.seq_len > MIN_BLOCK_SEQ
         and parallel >= MIN_BLOCK_PARALLEL
     ):
-        causal_block = 32 if head_dim <= 16 else 64
+        causal_block = 32 if effective_head_dim <= 16 else 64
 
     per_sample = config.seq_len * config.d_model * itemsize
     chunk = max(1, CHUNK_ACTIVATION_BYTES // max(1, per_sample))
     batch_chunk = chunk if chunk < config.batch_size else None
 
     return KernelPlan(
-        fuse_qkv=True, causal_block=causal_block, batch_chunk=batch_chunk
+        fuse_qkv=True,
+        causal_block=causal_block,
+        batch_chunk=batch_chunk,
+        pad_head_dim=pad_head_dim,
     )
 
 
@@ -385,6 +462,10 @@ def _mlx_transformer(
 
     batch, seq_len, d_model = x.shape
     head_dim = d_model // num_heads
+    # The SDPA operand width. It is wider than head_dim when the plan pads
+    # the head to reach the fused kernel. `scale` stays at the TRUE head_dim,
+    # because the padded lanes are zero and must not enter the softmax scale.
+    width = plan.pad_head_dim or head_dim
     scale = head_dim**-0.5
 
     # The mask form. True keeps the key position.
@@ -399,9 +480,9 @@ def _mlx_transformer(
 
     valid_tokens = valid_mask[..., None]
 
-    def heads(projection: mx.array) -> mx.array:
+    def heads(projection: mx.array, last: int = width) -> mx.array:
         return projection.reshape(
-            batch, seq_len, num_heads, head_dim
+            batch, seq_len, num_heads, last
         ).transpose(0, 2, 1, 3)
 
     for layer in layers:
@@ -411,12 +492,16 @@ def _mlx_transformer(
             fused = h @ layer["qkvw"] + layer["qkvb"]
             q, k, v = (heads(part) for part in mx.split(fused, 3, axis=-1))
         else:
-            q = heads(h @ layer["qw"].T + layer["qb"])
-            k = heads(h @ layer["kw"].T + layer["kb"])
-            v = heads(h @ layer["vw"].T + layer["vb"])
+            # The unfused path never pads, so it uses the true head width.
+            q = heads(h @ layer["qw"].T + layer["qb"], head_dim)
+            k = heads(h @ layer["kw"].T + layer["kb"], head_dim)
+            v = heads(h @ layer["vw"].T + layer["vb"], head_dim)
 
         # An explicit float32 softmax gave no accuracy gain here. Measured.
         context = _attention(q, k, v, scale, mask, plan.causal_block)
+        if context.shape[-1] != head_dim:
+            # Drop the zero lanes that the padded projection produced.
+            context = context[..., :head_dim]
         context = context.transpose(0, 2, 1, 3).reshape(batch, seq_len, d_model)
         attention = context @ layer["ow"].T + layer["ob"]
         x = x + mx.where(valid_tokens, attention, 0)
@@ -520,13 +605,34 @@ class UserOptimizedTransformer(BaselineTransformer):
 
         # One [D, 3D] weight in place of three [D, D] weights. The order is
         # q, k, v, so `mx.split(..., 3)` returns them in that order.
+        #
+        # When the plan pads the head, each head keeps its own columns and
+        # gains `pad - head_dim` zero columns, giving [D, 3*H*pad]. The
+        # projection then writes the wide head layout directly, so the pad
+        # costs no separate pass over the activation. The zero columns make
+        # q and k contribute nothing to the dot product and v contribute
+        # nothing to the output, so the result is unchanged.
+        pad = self.plan.pad_head_dim
+        head_dim = self.config.d_model // num_heads
         for layer in self._mlx_layers:
-            layer["qkvw"] = mx.concatenate(
+            weight = mx.concatenate(
                 [layer["qw"], layer["kw"], layer["vw"]], axis=0
             ).T
-            layer["qkvb"] = mx.concatenate(
+            bias = mx.concatenate(
                 [layer["qb"], layer["kb"], layer["vb"]], axis=0
             )
+            if pad is not None:
+                d_model = self.config.d_model
+                weight = mx.pad(
+                    weight.reshape(d_model, 3, num_heads, head_dim),
+                    [(0, 0), (0, 0), (0, 0), (0, pad - head_dim)],
+                ).reshape(d_model, 3 * num_heads * pad)
+                bias = mx.pad(
+                    bias.reshape(3, num_heads, head_dim),
+                    [(0, 0), (0, 0), (0, pad - head_dim)],
+                ).reshape(3 * num_heads * pad)
+            layer["qkvw"] = weight
+            layer["qkvb"] = bias
 
         # One variant for each mask form. `padded` changes the graph, so it
         # cannot be a traced argument. Two variants compile at most.

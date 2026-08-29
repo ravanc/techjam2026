@@ -3,6 +3,45 @@
 A record of every optimization tried on `torch_transformer_benchmark.py`.
 Add a new row for each attempt. Keep the failures. They stop repeated work.
 
+## Source of truth
+
+**This table is the only place that states the status of an optimization.**
+Read it first. Update it in the same change that adds, keeps or reverts an
+optimization. The section below each row holds the measurement that decided
+the status. If a section and this table disagree, this table is wrong: fix
+it.
+
+Status:
+
+- **KEPT** — it is in `UserOptimizedTransformer` now.
+- **REVERTED** — it was measured, and it lost. Do not try it again.
+- **RULED OUT** — it is out of scope, or it cannot pass.
+- **OPEN** — it is not tried yet.
+
+| # | Optimization | Status | Lives in | Applies where | Measured effect |
+|---:|---|---|---|---|---|
+| 1 | MLX behind the torch interface | **KEPT** | `_mlx_transformer()` L349, `UserOptimizedTransformer` L433 | every shape | 4.4x to 7.4x against torch CPU. float32 PASS |
+| 2 | `mx.compile` on the forward pass | **KEPT** | `make_call()` L535 | every shape | 14.203 ms to 13.401 ms (6%) |
+| 3 | float32 LayerNorm accumulation | **KEPT** | `norm()` L380, weight build L474 | every shape | no measured gain. Correct policy. Free |
+| 4 | Explicit float32 softmax, not fused | **REVERTED** | — | — | float16 49 to 50 failures. No gain. More code |
+| 5 | `torch.compile` over the MLX class | **RULED OUT** | — | — | crash. Dynamo cannot trace an MLX object |
+| 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L391 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
+| 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L272 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
+| 8 | Blocked causal attention | **KEPT** | `_attention()` L371 | causal, effective `head_dim < 64`, `seq_len > 64`, `batch * heads >= 64` | 1.63x at seq 1024. Bit exact. It is a workaround for the FALLBACK kernel: the fused kernel skips the triangle itself, at 0.55x. See row 18 |
+| 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L524, use L411 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
+| 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L568 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
+| 11 | Pad `head_dim` from 8 up to 32 | **REVERTED** | — | — | 0.91x at shape 7. Blocking beats it. Wrong target: 32 is still the fallback kernel. See row 17 |
+| 12 | Full port of the file to MLX | **RULED OUT** | — | — | out of scope. The baseline does not change |
+| 13 | float16 and bfloat16 accuracy | **RULED OUT** | — | — | no implementation can pass. torch `F.sdpa` fails too |
+| 14 | Hand-written Metal kernel for `head_dim = 8` | **OPEN** | — | shapes 7 and 11 | not measured. `mx.fast.sdpa` falls back to a materializing kernel below `head_dim = 64`. Padding cannot rescue these two: 0.894x and 0.756x. See row 17 |
+| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L339 | `head_dim >= 32`, `head_dim < 64` and `seq_len >= 4 * d_model`. Shape 13 only | **1.646x at shape 13**. A blanket `head_dim < 64` rule gives 0.983x FLOP-weighted and loses |
+| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L268 | `head_dim` 64..128 gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S2048: 128 MiB fused against 1048 MiB fallback |
+| 19 | Sweep `seq_len` to place the `S >= 4*D` threshold | **OPEN** | — | `head_dim` 32..48 | not measured. Row 17 rests on one point |
+| 15 | Fused FFN | **OPEN** | — | every shape | not measured. Check `mx.compile` first |
+| 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
+
+Line numbers are in `torch_transformer_benchmark.py`.
+
 ## Test conditions
 
 | Item | Value |
@@ -58,19 +97,9 @@ shapes. See attempt 7.
 
 ## Attempts
 
-| # | Attempt | Result | Kept |
-|---|---|---|---|
-| 1 | MLX behind the torch interface | 4.59x, float32 PASS | Yes |
-| 2 | `mx.compile` on the forward pass | 14.203 ms to 13.401 ms (6%) | Yes |
-| 3 | float32 LayerNorm accumulation | No measured gain. Correct policy. Free. | Yes |
-| 4 | Explicit float32 softmax, not fused | No gain. More code. | **No** |
-| 5 | `torch.compile` over the MLX class | Crash | **No** |
-| 6 | Mask form selected by the input | No gain at seq 128. 3.9% at seq 512. 1.7% at seq 2048. | Yes |
-| 7 | Shape-aware kernel plan (`KernelPlan`) | 1.57x at shape 13. 1.31x at shape 6. | Yes |
-| 8 | Blocked causal attention | Bit exact. 1.63x at seq 1024. | Yes |
-| 9 | Fused `[D, 3D]` QKV matmul | 1.99x at batch 1. 1.00x at d_model 1024. | Yes |
-| 10 | Batch chunking, full depth for each chunk | Peak memory 9.16 GiB to 2.68 GiB, and faster | Yes |
-| 11 | Pad `head_dim` from 8 up to 32 | 0.91x at shape 7. 1.17x at shape 11. | **No** |
+Rows 1 to 11 of the source of truth table. Each section holds the
+measurement that decided the status. Rows 12 to 16 are further down: see
+"Known limit", "Not tried yet" and "Ruled out".
 
 ### 1. MLX behind the torch interface — KEPT
 
@@ -333,6 +362,167 @@ it multiplies the arithmetic by 4 while efficiency rises only 3.4x.
 Blocking (attempt 8) gives 1.24x and 1.29x on the same two shapes, and it
 adds no arithmetic. Blocking wins. Reverted.
 
+### 17. Pad `head_dim` to 64 to reach the fused SDPA kernel — KEPT
+
+Attempt 11 padded 8 up to 32 and lost. It aimed at the wrong target. Row 18
+shows why: 32 is still on the fallback kernel, so that test never reached
+the fused kernel.
+
+#### Why it works
+
+The gain is **not** arithmetic. The padded path does *more* arithmetic than
+the path it replaces. The gain is DRAM traffic that stops happening.
+
+The two kernels of row 18 differ in what they put in memory:
+
+| | fallback | fused (flash) |
+|---|---|---|
+| `S x S` scores | written to DRAM, read back for the mask, read again for softmax, read again for `@V` | held in registers and threadgroup memory, never written to DRAM |
+| causal triangle | built, then masked away | skipped, measured 0.55x |
+| DRAM cost | grows as `S * S` | grows as `S * head_dim` |
+
+So the fallback pays for the score matrix and the fused kernel does not.
+That matrix is the largest object in the layer. At shape 13:
+
+| Item, one layer | Size |
+|---|---:|
+| `S x S` score matrix, `B*H*S*S*4` | **1.000 GiB** |
+| q, k, v operands, `3*B*S*D*4` | 96.0 MiB |
+| ratio | **10.7x** |
+
+Move 1.000 GiB across 4 layers, two or three times each, at the 150 GB/s of
+this machine:
+
+| passes over the score matrix | traffic | time |
+|---:|---:|---:|
+| 2 | 8.00 GiB | 57.3 ms |
+| 3 | 12.00 GiB | 85.9 ms |
+
+**Measured saving: 182.790 - 111.195 = 71.6 ms.** It sits between the two
+estimates. The win is the score-matrix traffic, and nothing else.
+
+Against that, the pad costs `rho = 2`:
+
+| Item | Before | After |
+|---|---:|---:|
+| QKV projection | 25.77 GFLOP | 51.54 GFLOP, about +8.6 ms |
+| attention matmuls | 137.44 GFLOP | 274.88 GFLOP, then 0.55x back from the causal skip |
+
+Trading 8.6 ms of extra projection for 71.6 ms of removed traffic is the
+whole optimization.
+
+#### Why it works only at a long sequence
+
+The score matrix is `S x S` and the operands are `S x head_dim`. Their ratio
+is `S / head_dim`. That single number decides how much traffic the fused
+kernel removes:
+
+| # | S | head_dim | `S / head_dim` | result |
+|---:|---:|---:|---:|---|
+| 13 | 1024 | 32 | **32** | 1.644x |
+| 11 | 128 | 8 | 16 | needs `rho = 8`, loses |
+| 7 | 128 | 8 | 16 | needs `rho = 8`, loses |
+| 1, 5, 6 | 128 | 32 | 4 | inside the noise floor |
+| 12 | 32 | 32 | 1 | loses |
+| 9 | 128 | 128 | 1 | already fused |
+
+At `S = D` the score matrix is no larger than the activations, so there is
+little traffic to remove and the pad only adds arithmetic. The threshold
+`S >= 4*D` is a statement about this ratio.
+
+#### Why `head_dim = 8` cannot use it
+
+Shapes 7 and 11 have the second largest `S / head_dim` in the table, so they
+have traffic worth removing. They still lose, for a reason outside
+attention: reaching 64 from 8 needs `rho = 8`, and `rho` multiplies the QKV
+projection, which is `6*D*D` per token and has nothing to do with attention.
+An 8x projection is not payable at any sequence length. Shape 11 also loses
+blocking, which had given it 1.29x. That is why it fell to 0.756x.
+
+Those two shapes need a kernel, not a pad. See row 14.
+
+The pad is exact. Zeros in q and k add nothing to the dot product, zeros in
+v add nothing to the output, and the extra output columns get discarded.
+`scale` stays at the TRUE `head_dim`, so the softmax does not move. The pad
+is folded into the fused QKV weight, which becomes `[D, 3*H*64]` with zero
+columns, so the projection writes the wide layout and costs no extra pass.
+
+**A blanket `head_dim < 64` rule loses.** Full sweep, MLX ms. The noise
+floor is +-4%, taken from shapes 8, 9 and 10, whose path did not change:
+
+| # | D | S | head_dim | rho | before | after | ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 128 | 128 | 32 | 2 | 10.141 | 9.497 | 1.068x |
+| 4 | 128 | 128 | 32 | 2 | 2.495 | 2.696 | 0.925x |
+| 5 | 128 | 128 | 32 | 2 | 20.527 | 18.582 | 1.105x |
+| 6 | 128 | 128 | 32 | 2 | 1677.834 | 1718.289 | 0.976x |
+| 7 | 32 | 128 | 8 | 8 | 7.100 | 7.942 | 0.894x |
+| 11 | 128 | 128 | 8 | 8 | 17.257 | 22.819 | **0.756x** |
+| 12 | 128 | 32 | 32 | 2 | 2.386 | 2.656 | 0.898x |
+| 13 | 128 | 1024 | 32 | 2 | 182.790 | **111.044** | **1.646x** |
+
+    .venv/bin/python3 scoreboard.py --cases all \
+        --label "pad head_dim to 64 to reach the fused SDPA kernel"
+
+FLOP-weighted, the blanket rule gives **0.983x**, a net loss. Shape 6 is
+66.5% of the weight and it measured 0.976x.
+
+The pad multiplies the QKV projection and the attention arithmetic by
+`rho = 64 / head_dim`. Per token per layer the projection is `6*D*D` and
+attention is `4*S*D`. Two conditions gate it:
+
+1. `rho <= 2`, so `head_dim >= 32`. At `head_dim = 8` the projection grows
+   8x. Shape 11 also loses blocking, which had given it 1.29x. That is why
+   it falls to 0.756x.
+2. `S >= 4*D`, so attention dominates the layer. Every shape with `S == D`
+   landed inside the noise floor.
+
+Shape 11 also failed a mechanistic cost model built on arithmetic alone:
+the model predicted the sign on only 6 of 10 shapes, and every miss sat
+within 10% of 1.0. Arithmetic does not decide the small cases. The memory
+tail and the launch count do.
+
+**Threshold 2 rests on ONE point.** See row 19.
+
+Accuracy is unchanged: `max_abs` 1.07e-06 to 2.86e-06 at `atol=0.002` and
+`rtol=0.02`, over all 13 shapes, at `padding_ratio` 0.0 and 0.3.
+
+### 18. MLX dispatches SDPA to two different kernels — a fact
+
+`mx.fast.scaled_dot_product_attention` uses a fused flash kernel **only for
+`head_dim` 64 to 128**. Outside that range it accepts the call, returns a
+correct answer, and uses a fallback that materializes `B x H x S x S`.
+
+Measured by peak GPU memory at B=8, H=8, S=2048, where the score matrix
+would be 1024 MiB. The column is `peak - base`:
+
+| head_dim | 8 | 16 | 32 | 48 | 64 | 72 | 96 | 128 | 256 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| peak MiB | 1048 | 1068 | 1108 | 1148 | **128** | **144** | **192** | **256** | 1668 |
+
+Of the appendix shapes, only 9 (`head_dim=128`) and 10 (`head_dim=64`)
+reach the fused kernel by themselves.
+
+This corrects two earlier readings:
+
+- The "18x efficiency curve against `head_dim`" of attempt 8 is not a
+  curve. It is a cliff between two kernels.
+- `mask="causal"` is slower than `mask=None` on the **fallback** only. On
+  the fused kernel it is **0.55x**, measured at B=32, H=8, S=1024,
+  `head_dim=64`: 11.08 ms against 20.31 ms. The fused kernel skips the
+  masked blocks itself, so blocking above it only adds launches.
+
+### 19. Sweep `seq_len` to place the `S >= 4*D` threshold — OPEN
+
+Row 17 holds one measured point on the winning side: shape 13, at `S = 8*D`.
+The threshold sits at `S >= 4*D`, between shape 1 (`S = D`, no gain) and
+shape 13. Nothing between those two is measured.
+
+Hold `D=128`, `head_dim=32`, `B=64`. Sweep `S` through 128, 256, 512, 1024
+and 2048, with the padded and the unpadded path, end to end. Move the
+threshold to where the curve crosses 1.0. Do not move it on a model: the
+arithmetic model already failed on 4 of 10 shapes.
+
 ## Cost of the framework boundary
 
 The two conversions sit inside the timed region. I measured them:
@@ -370,7 +560,7 @@ This gives the split the log wanted:
 Use the MPS row for a stable comparison. The CPU row moves with the machine
 state; the two GPU rows do not.
 
-## Known limit: float16 and bfloat16 cannot pass
+## Known limit: float16 and bfloat16 cannot pass (row 13)
 
 | Type | Failures at `atol=0.002` |
 |---|---|
@@ -411,7 +601,7 @@ Shape 14 of the appendix (B=32, D=1024, H=16, S=100000, L=2) is disabled.
 The input alone is 12.2 GiB in float32, and `BaselineSelfAttention` builds a
 B x H x S x S score matrix, which is 18.6 TiB at that shape.
 
-## Not tried yet
+## Not tried yet (rows 14 to 16)
 
 - **A hand-written Metal kernel by `mx.fast.metal_kernel`, for
   `head_dim = 8`.** This is the largest gap that remains. `mx.fast.sdpa`
@@ -424,7 +614,7 @@ B x H x S x S score matrix, which is 18.6 TiB at that shape.
 - **Quantization.** `mx.quantize` for the linear layers. This will fail the
   accuracy test, so measure the speed only.
 
-## Ruled out
+## Ruled out (row 12)
 
 - **Full port of the file to MLX.** Out of scope. `BaselineTransformer` is
   the benchmark: it is the reference for accuracy and for speed, so it does

@@ -11,17 +11,47 @@ the new measurement here.
 
 | Condition | Use |
 |---|---|
-| `head_dim >= 64` | one full `mx.fast.scaled_dot_product_attention` call |
+| `head_dim` 64..128 | one full `mx.fast.scaled_dot_product_attention` call |
 | `head_dim <= 16`, causal, `S > 64`, `B*H >= 64` | blocked causal, block 32 |
 | `head_dim` 17..63, causal, `S > 64`, `B*H >= 64` | blocked causal, block 64 |
+| `head_dim` 32..48 and `S >= 4*D` | pad `head_dim` to 64, then one full call |
 | always | one fused `[D, 3D]` QKV matmul |
 | activation over 64 MiB | chunk the batch, full depth per chunk |
 
-## 1. `mx.fast.scaled_dot_product_attention` does not skip the causal triangle
+## 0. MLX has two SDPA kernels, and the shape picks one
 
-This is the most useful fact in this file.
+**This is the most useful fact in this file. Read it before section 1.**
 
-At B=64, H=4, S=1024, head_dim=32:
+`mx.fast.scaled_dot_product_attention` dispatches to a fused flash kernel
+**only for `head_dim` 64 to 128**. Outside that range it accepts the call,
+returns a correct answer, and uses a fallback that materializes the whole
+`B x H x S x S` score matrix.
+
+Measured by peak GPU memory at B=8, H=8, S=2048, where the score matrix
+would be 1024 MiB. The column is `peak - base`, in MiB:
+
+| head_dim | 8 | 16 | 32 | 48 | 64 | 72 | 96 | 128 | 256 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| peak MiB | 1048 | 1068 | 1108 | 1148 | **128** | **144** | **192** | **256** | 1668 |
+| path | fallback | fallback | fallback | fallback | **fused** | **fused** | **fused** | **fused** | fallback |
+
+Reproduce it by `mx.reset_peak_memory()` and `mx.get_peak_memory()` around
+one call.
+
+This one fact explains section 1 and section 3. The 18x spread of efficiency
+against `head_dim` is not a curve. It is a cliff between two kernels.
+
+Of the appendix shapes, only shape 9 (`head_dim=128`) and shape 10
+(`head_dim=64`) reach the fused kernel by themselves.
+
+## 1. The FALLBACK does not skip the causal triangle. The FUSED kernel does.
+
+**Corrected.** An earlier version of this file said that
+`mx.fast.scaled_dot_product_attention` never skips the triangle. That is
+true of the fallback only, and the original measurement used `head_dim=32`,
+which is on the fallback.
+
+Fallback, at B=64, H=4, S=1024, head_dim=32:
 
 | mask argument | Time |
 |---|---:|
@@ -29,15 +59,24 @@ At B=64, H=4, S=1024, head_dim=32:
 | `"causal"` | 52.7 ms |
 | explicit bool array | 55.1 ms |
 
-`mask="causal"` is **slower** than no mask. The kernel calculates the whole
-square and then applies the mask. It does not skip the half it will throw
-away.
+Fused, at B=32, H=8, S=1024, head_dim=64:
 
-Two consequences:
+| mask argument | Time |
+|---|---:|
+| `None` | 20.31 ms |
+| `"causal"` | **11.08 ms**, which is 0.55x |
 
-- Choosing `"causal"` over an equivalent bool array is not an optimization.
-  Measured at B=64, H=4, S=128: 0.996 ms against 0.989 ms. That is noise.
-- The triangle must be skipped above the kernel, by blocking.
+So the two kernels behave in opposite ways:
+
+- On the **fallback**, `"causal"` costs extra. The kernel builds the whole
+  square and then masks it. The triangle must be skipped above the kernel,
+  by blocking. That is what optimization 8 does.
+- On the **fused** kernel, `"causal"` saves 45%. The kernel skips the masked
+  blocks itself. Blocking above it only adds kernel launches, and measured
+  worse on every shape tried.
+
+Therefore blocked causal attention is a workaround for the fallback path.
+Do not apply it once the head reaches the fused range.
 
 ## 2. Blocked causal attention
 
@@ -98,19 +137,58 @@ B=64, H chosen to hold the work near constant, S=128, `mask="causal"`:
 
 Peak float32 matmul on this GPU is about 3500 GFLOP/s.
 
+**Read this table with section 0.** The step from 270 to 1390 is the step
+from the fallback kernel to the fused kernel, not a gradual effect of the
+reduction length. 8, 32 and 256 are fallback rows. 64 and 128 are fused
+rows.
+
 `head_dim = 8` is the worst case in the appendix table. It appears in shape 7
 (D=32, H=4) and shape 11 (D=128, H=16). The reduction is 8 elements long, so
 the kernel spends its time on addressing, not on arithmetic.
 
-**This gap is the best target for a hand-written Metal kernel.** Blocking
-recovers 1.24x to 1.29x of it. A kernel that holds a whole 8-wide head in
-registers should recover more. Not tried yet.
+### Padding `head_dim` to reach the fused kernel
 
-Padding `head_dim` from 8 up to 32 with zeros is **not** worth it. It is
-exact, because zeros in q and k add nothing to the dot product and the zero
-columns of the output get discarded. But it multiplies the arithmetic by 4
-while efficiency rises by only 3.4x. Measured: 0.91x at shape 7, 1.17x at
-shape 11. Blocking beats it, and blocking costs no extra arithmetic.
+Padding with zeros is exact: zeros in q and k add nothing to the dot
+product, zeros in v add nothing to the output, the extra output columns get
+discarded, and `scale` stays at the TRUE `head_dim` so the softmax does not
+move. Fold the pad into the fused QKV weight, so the projection writes the
+wide layout and no extra pass over the data is needed.
+
+The pad multiplies both the QKV projection and the attention arithmetic by
+`rho = 64 / head_dim`. Whether it pays depends on `rho` and on how much of
+the layer is attention. Per token per layer the cost is `6*D*D` for the QKV
+projection against `4*S*D` for attention.
+
+Full-sweep result of a blanket `head_dim < 64` rule, MLX ms before against
+after. The noise floor is +-4%, from the three shapes whose path did not
+change (8, 9, 10):
+
+| # | D | S | head_dim | rho | before | after | ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 128 | 128 | 32 | 2 | 10.141 | 9.497 | 1.068x |
+| 4 | 128 | 128 | 32 | 2 | 2.495 | 2.696 | 0.925x |
+| 5 | 128 | 128 | 32 | 2 | 20.527 | 18.582 | 1.105x |
+| 6 | 128 | 128 | 32 | 2 | 1677.834 | 1718.289 | 0.976x |
+| 7 | 32 | 128 | 8 | 8 | 7.100 | 7.942 | 0.894x |
+| 11 | 128 | 128 | 8 | 8 | 17.257 | 22.819 | **0.756x** |
+| 12 | 128 | 32 | 32 | 2 | 2.386 | 2.656 | 0.898x |
+| 13 | 128 | 1024 | 32 | 2 | 182.790 | **111.044** | **1.646x** |
+
+The blanket rule gives **0.983x FLOP-weighted**, which is a net loss. Two
+conditions gate it instead:
+
+1. `rho <= 2`, so `head_dim >= 32`. At `head_dim = 8` the projection grows
+   8x and no attention rate recovers it.
+2. `S >= 4*D`, so attention dominates the layer. Every shape with `S == D`
+   measured inside the noise floor.
+
+**The second threshold rests on ONE measured point, shape 13.** It sits
+between shape 1 at `S = D` and shape 13 at `S = 8*D`. Sweep S at fixed D
+before you move it.
+
+This supersedes the older result that padding 8 up to 32 is not worth it.
+That test was correct but aimed at the wrong target: 32 is still on the
+fallback path, so it never reached the fused kernel at all.
 
 ## 4. Fused QKV projection
 
