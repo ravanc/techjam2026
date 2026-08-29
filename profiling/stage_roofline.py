@@ -17,11 +17,11 @@ For each stage it reports:
     GFLOP/s     achieved arithmetic rate
     GB/s        achieved bandwidth against the compulsory traffic
     %comp       achieved rate / measured matmul peak (4.06 TFLOP/s)
-    %mem        achieved bandwidth / measured bandwidth (150 GB/s)
+    %mem        achieved bandwidth / measured bandwidth (128 GB/s)
     limit       the larger of %comp and %mem names the limit. When both are
                 small the stage is LAUNCH bound: it does not fill the GPU.
 
-The ridge point of this machine is 4.06e12 / 150e9 = 27.1 FLOP/byte. A stage
+The ridge point of this machine is 4.06e12 / 128e9 = 31.7 FLOP/byte. A stage
 below the ridge cannot reach the arithmetic peak whatever the kernel does.
 
 Run:

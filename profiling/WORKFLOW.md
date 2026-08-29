@@ -56,7 +56,12 @@ Two extra diagnostics print under each table:
   attention kernel wrote the `B x H x S x S` score matrix to DRAM.
 - **Strided against contiguous operands.** The head layout is a transpose,
   and an MLX transpose is a free view, so the layout cost hides inside the
-  attention kernel. This pair separates the two.
+  attention kernel call. This pair separates the two. **Read the gap
+  carefully.** It does not prove that the kernel reads the stride badly. It
+  can also be a copy that the kernel launch runs for you: a
+  `mx.fast.metal_kernel` with `ensure_row_contiguous=True` copies every
+  operand that is not row contiguous. That is what the gap was for the steel
+  kernel. See OPTIMIZATIONS.md rows 32 and 34.
 
 Compare `sum of stages` against `real per layer`. The sum is the larger
 number, because `mx.compile` fuses the elementwise stages and the GPU

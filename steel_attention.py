@@ -174,7 +174,8 @@ def build_header(align_q: bool, align_k: bool, causal: bool) -> str:
 _CACHE: Dict[tuple, object] = {}
 
 
-def _source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn) -> str:
+def _source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn,
+            out_strides) -> str:
     """
     The kernel body. It builds AttnParams on the stack, then calls the
     hoisted kernel.
@@ -182,6 +183,14 @@ def _source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn) -> str:
     Every shape value is a literal, because the JIT compiles one kernel per
     shape anyway. A literal costs nothing and it lets the compiler fold the
     block counts.
+
+    The INPUT strides are not literals. `mx.fast.metal_kernel` gives the
+    kernel a `q_strides` buffer that holds the true strides of the array it
+    binds, so the kernel reads whatever layout the caller passes. That is
+    what lets `ensure_row_contiguous` stay False. See `steel_attention()`.
+
+    The OUTPUT strides are literals, because this module chooses the output
+    layout itself.
     """
     nq = -(-seq // bq)
     nk = -(-seq // bk)
@@ -206,18 +215,20 @@ def _source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn) -> str:
   p.kL_rem = {seq - (seq // bk) * bk};
   p.qL_off = 0;
 
-  p.Q_strides[0] = {heads * seq * head_dim};
-  p.Q_strides[1] = {seq * head_dim};
-  p.Q_strides[2] = {head_dim};
-  p.K_strides[0] = {heads * seq * head_dim};
-  p.K_strides[1] = {seq * head_dim};
-  p.K_strides[2] = {head_dim};
-  p.V_strides[0] = {heads * seq * head_dim};
-  p.V_strides[1] = {seq * head_dim};
-  p.V_strides[2] = {head_dim};
-  p.O_strides[0] = {heads * seq * head_dim};
-  p.O_strides[1] = {seq * head_dim};
-  p.O_strides[2] = {head_dim};
+  // The batch, the head and the sequence strides of the array that MLX
+  // bound. The kernel needs the last axis contiguous, and nothing else.
+  p.Q_strides[0] = q_strides[0];
+  p.Q_strides[1] = q_strides[1];
+  p.Q_strides[2] = q_strides[2];
+  p.K_strides[0] = k_strides[0];
+  p.K_strides[1] = k_strides[1];
+  p.K_strides[2] = k_strides[2];
+  p.V_strides[0] = v_strides[0];
+  p.V_strides[1] = v_strides[1];
+  p.V_strides[2] = v_strides[2];
+  p.O_strides[0] = {out_strides[0]};
+  p.O_strides[1] = {out_strides[1]};
+  p.O_strides[2] = {out_strides[2]};
 
   AttnMaskParams mp;
   mp.M_strides[0] = 0;
@@ -260,14 +271,39 @@ def supports(head_dim: int, bq: int = 32, bk: int = 32) -> bool:
 def steel_attention(
     q: mx.array, k: mx.array, v: mx.array, scale: float,
     causal: bool = True, bq: int = 32, bk: int = 32,
-    wm: int = 4, wn: int = 1,
+    wm: int = 4, wn: int = 1, head_last: bool = False,
 ) -> mx.array:
     """
     Run MLX's flash attention kernel at ANY head_dim that is a multiple of 8.
 
-    `q`, `k` and `v` are [B, H, S, D] float32 and contiguous. `S` must match
-    between q and k. This is the whole contract; it is a measurement tool,
-    not a general operator.
+    `q`, `k` and `v` are [B, H, S, D] float32. `S` must match between q and
+    k. They do NOT have to be contiguous: the only requirement is that the
+    last axis has stride 1. A strided view is the normal case, and it costs
+    no copy. See "NO COPY" below.
+
+    `head_last` picks the output layout:
+
+      False  the output is [B, H, S, D], contiguous.
+      True   the output is [B, S, H, D], contiguous.
+
+    Use `head_last=True` when the caller merges the heads next. The kernel
+    then writes the merged layout directly, so `reshape(B, S, H * D)` is a
+    free view instead of a copy.
+
+    NO COPY
+
+    `ensure_row_contiguous` stays False. With it True, MLX copies q, k and v
+    into fresh contiguous buffers before every launch. The model builds them
+    as strided views of one fused QKV buffer, so that copy always ran, and it
+    cost more than the kernel: at the shape 6 chunk the call took 5.364 ms on
+    the views against 2.223 ms on ready-made contiguous arrays, and the copy
+    alone was 3.328 ms.
+
+    The copy buys nothing. `steel_attention.h` reads Q, K and V through
+    `params->Q_strides`, so it already handles any layout with a contiguous
+    last axis. `mx.fast.metal_kernel` passes the true strides of each bound
+    array in a `q_strides` buffer, and `_source()` copies them into
+    AttnParams. See OPTIMIZATIONS.md row 34.
     """
     batch, heads, seq, head_dim = q.shape
     if head_dim % 8:
@@ -275,20 +311,31 @@ def steel_attention(
     if q.dtype != mx.float32:
         raise ValueError("float32 only")
 
+    # The output is contiguous in the layout the caller asked for. These are
+    # the (batch, head, sequence) strides that place element [b, h, s, d].
+    if head_last:
+        out_shape = (batch, seq, heads, head_dim)
+        out_strides = (seq * heads * head_dim, head_dim, heads * head_dim)
+    else:
+        out_shape = (batch, heads, seq, head_dim)
+        out_strides = (heads * seq * head_dim, seq * head_dim, head_dim)
+
     # `_source()` bakes the shape in as literals, so every one of them must
     # be in the key. Leaving `seq` out gave a silent wrong answer: an S=256
-    # call reused the S=128 kernel and read the wrong strides.
-    key = (batch, heads, seq, head_dim, bq, bk, wm, wn, causal)
+    # call reused the S=128 kernel and read the wrong strides. The INPUT
+    # strides are not in the key, because they are not literals any more.
+    key = (batch, heads, seq, head_dim, bq, bk, wm, wn, causal, head_last)
     kernel = _CACHE.get(key)
     if kernel is None:
         kernel = mx.fast.metal_kernel(
             name=f"steel_attn_bd{head_dim}_bq{bq}_bk{bk}"
-                 f"_b{batch}_h{heads}_s{seq}",
+                 f"_b{batch}_h{heads}_s{seq}_hl{int(head_last)}",
             input_names=["q", "k", "v"],
             output_names=["out"],
             header=build_header(seq % bq == 0, seq % bk == 0, causal),
-            source=_source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn),
-            ensure_row_contiguous=True,
+            source=_source(batch, heads, seq, head_dim, scale, bq, bk, wm, wn,
+                           out_strides),
+            ensure_row_contiguous=False,
         )
         _CACHE[key] = kernel
 
@@ -297,7 +344,7 @@ def steel_attention(
         inputs=[q, k, v],
         grid=(nq * 32, heads * wm, batch * wn),
         threadgroup=(32, wm, wn),
-        output_shapes=[q.shape],
+        output_shapes=[out_shape],
         output_dtypes=[q.dtype],
     )
     return outputs[0]

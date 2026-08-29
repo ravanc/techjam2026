@@ -12,7 +12,12 @@ FLOP count comes from the model definition, not from a specification.
 - CPU is the reference for both accuracy and speedup.
 - Each call is bracketed by a device synchronize. Rounds alternate the
   backend order, so no backend always runs on a cold chip.
-- sweep took 9.3 minutes
+- sweep took 2.9 minutes
+- **† marks a CPU reading that came from the cache, not from this
+  sweep.** The earlier sweep ran under a different machine load, at
+  a different chip temperature. The speedup beside a marked reading
+  mixes two sweeps. Run without `--cpu-cache` before you report a
+  number.
 
 MFU appears once, in its own section, and it is provisional. See
 [../flops.py](../flops.py).
@@ -21,19 +26,19 @@ MFU appears once, in its own section, and it is provisional. See
 
 | # | Shape | CPU ms | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 61.252 | 17.943 | 5.502 | 3.41x | **11.13x** | 3.26x |
-| 2 | B1 D128 H4 S128 | 2.571 | 1.889 | 0.650 | 1.36x | **3.96x** | 2.91x |
-| 3 | B4 D128 H4 S128 | 7.169 | 2.217 | 0.877 | 3.23x | **8.17x** | 2.53x |
-| 4 | B16 D128 H4 S128 | 19.373 | 4.887 | 1.764 | 3.96x | **10.98x** | 2.77x |
-| 5 | B128 D128 H4 S128 | 139.502 | 35.015 | 11.264 | 3.98x | **12.38x** | 3.11x |
-| 6 | B10000 D128 H4 S128 | 14639.960 | 2693.553 | 852.760 | 5.44x | **17.17x** | 3.16x |
-| 7 | B64 D32 H4 S128 | 25.959 | 11.533 | 1.395 | 2.25x | **18.60x** | 8.27x |
-| 8 | B64 D1024 H4 S128 | 470.854 | 166.595 | 128.377 | 2.83x | **3.67x** | 1.30x |
-| 9 | B64 D128 H1 S128 | 35.099 | 7.904 | 4.438 | 4.44x | **7.91x** | 1.78x |
-| 10 | B64 D128 H2 S128 | 46.106 | 13.077 | 4.346 | 3.53x | **10.61x** | 3.01x |
-| 11 | B64 D128 H16 S128 | 130.289 | 42.589 | 5.342 | 3.06x | **24.39x** | 7.97x |
-| 12 | B64 D128 H4 S32 | 12.224 | 3.220 | 1.481 | 3.80x | **8.25x** | 2.17x |
-| 13 | B64 D128 H4 S1024 | 1899.325 | 577.590 | 59.429 | 3.29x | **31.96x** | 9.72x |
+| 1 | B64 D128 H4 S128 | 61.252 † | 17.295 | 4.230 | 3.54x | **14.48x** | 4.09x |
+| 2 | B1 D128 H4 S128 | 2.571 † | 1.575 | 0.631 | 1.63x | **4.07x** | 2.50x |
+| 3 | B4 D128 H4 S128 | 7.169 † | 2.014 | 0.772 | 3.56x | **9.28x** | 2.61x |
+| 4 | B16 D128 H4 S128 | 19.373 † | 4.706 | 1.396 | 4.12x | **13.88x** | 3.37x |
+| 5 | B128 D128 H4 S128 | 139.502 † | 33.459 | 8.428 | 4.17x | **16.55x** | 3.97x |
+| 6 | B10000 D128 H4 S128 | 14639.960 † | 2715.305 | 660.808 | 5.39x | **22.15x** | 4.11x |
+| 7 | B64 D32 H4 S128 | 25.959 † | 11.572 | 1.145 | 2.24x | **22.68x** | 10.11x |
+| 8 | B64 D1024 H4 S128 | 470.854 † | 165.298 | 127.573 | 2.85x | **3.69x** | 1.30x |
+| 9 | B64 D128 H1 S128 | 35.099 † | 8.015 | 4.427 | 4.38x | **7.93x** | 1.81x |
+| 10 | B64 D128 H2 S128 | 46.106 † | 12.879 | 4.290 | 3.58x | **10.75x** | 3.00x |
+| 11 | B64 D128 H16 S128 | 130.289 † | 41.882 | 4.362 | 3.11x | **29.87x** | 9.60x |
+| 12 | B64 D128 H4 S32 | 12.224 † | 3.393 | 1.382 | 3.60x | **8.84x** | 2.45x |
+| 13 | B64 D128 H4 S1024 | 1899.325 † | 560.787 | 50.299 | 3.39x | **37.76x** | 11.15x |
 
 ## Achieved arithmetic rate
 
@@ -43,19 +48,19 @@ matmul, torch MPS 4.16, torch CPU 1.42.
 
 | # | Shape | GFLOP | CPU TFLOP/s | MPS TFLOP/s | **MLX TFLOP/s** | MLX token/s | Plan chosen |
 |---:|---|---:|---:|---:|---:|---:|---|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.140 | 0.479 | **1.561** | 1,489,032 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.052 | 0.071 | **0.206** | 196,910 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 3 | B4 D128 H4 S128 | 0.54 | 0.075 | 0.242 | **0.612** | 583,476 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.111 | 0.439 | **1.217** | 1,160,970 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.123 | 0.491 | **1.525** | 1,454,502 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 0.092 | 0.498 | **1.574** | 1,501,008 | fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.036 | 0.081 | **0.673** | 5,870,910 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 8 | B64 D1024 H4 S128 | 429.50 | 0.912 | 2.578 | **3.346** | 63,812 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.245 | 1.087 | **1.935** | 1,845,721 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.186 | 0.657 | **1.976** | 1,884,771 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.066 | 0.202 | **1.608** | 1,533,538 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.143 | 0.542 | **1.178** | 1,382,616 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
-| 13 | B64 D128 H4 S1024 | 188.98 | 0.099 | 0.327 | **3.180** | 1,102,760 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.140 | 0.497 | **2.031** | 1,936,653 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.052 | 0.085 | **0.213** | 202,812 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 3 | B4 D128 H4 S128 | 0.54 | 0.075 | 0.267 | **0.695** | 663,051 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.111 | 0.456 | **1.538** | 1,466,787 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.123 | 0.513 | **2.038** | 1,943,948 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 0.092 | 0.494 | **2.031** | 1,937,023 | fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.036 | 0.081 | **0.821** | 7,156,410 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 8 | B64 D1024 H4 S128 | 429.50 | 0.912 | 2.598 | **3.367** | 64,214 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.245 | 1.072 | **1.940** | 1,850,280 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.186 | 0.667 | **2.003** | 1,909,761 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.066 | 0.205 | **1.969** | 1,878,172 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.143 | 0.514 | **1.262** | 1,481,798 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
+| 13 | B64 D128 H4 S1024 | 188.98 | 0.099 | 0.337 | **3.757** | 1,302,917 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True |
 
 ## MFU — PROVISIONAL, do not quote without this note
 
@@ -69,22 +74,22 @@ number in this table scales linearly with it. Fix the constant in
 
 | # | Shape | GFLOP | FLOP share | MLX MFU | MPS MFU |
 |---:|---|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 31.2% | 9.6% |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 4.1% | 1.4% |
-| 3 | B4 D128 H4 S128 | 0.54 | 0.0% | 12.2% | 4.8% |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 24.3% | 8.8% |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 30.4% | 9.8% |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 31.4% | 9.9% |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 13.4% | 1.6% |
-| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 66.8% | 51.5% |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 38.6% | 21.7% |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 39.4% | 13.1% |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 32.1% | 4.0% |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 23.5% | 10.8% |
-| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 63.5% | 6.5% |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 40.5% | 9.9% |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 4.2% | 1.7% |
+| 3 | B4 D128 H4 S128 | 0.54 | 0.0% | 13.9% | 5.3% |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 30.7% | 9.1% |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 40.7% | 10.2% |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 40.5% | 9.9% |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 16.4% | 1.6% |
+| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 67.2% | 51.9% |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 38.7% | 21.4% |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 40.0% | 13.3% |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 39.3% | 4.1% |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 25.2% | 10.3% |
+| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 75.0% | 6.7% |
 
-- unweighted mean MLX MFU: **31.62%**
-- FLOP-weighted mean MLX MFU: **41.97%**
+- unweighted mean MLX MFU: **36.34%**
+- FLOP-weighted mean MLX MFU: **49.38%**
 
 Shape 6 alone is two thirds of the FLOP weight, so a FLOP-weighted
 score is mostly a score on shape 6.
@@ -114,10 +119,10 @@ Against the CPU baseline, at `atol=0.002` and `rtol=0.02`.
 | Metric | Value |
 |---|---:|
 | Shapes scored | 13 |
-| Median MLX speedup over CPU | **10.98x** |
-| Range of MLX speedup | 3.67x to 31.96x |
-| Median MLX rate | 1.561 TFLOP/s |
-| Best MLX rate | 3.346 TFLOP/s |
+| Median MLX speedup over CPU | **13.88x** |
+| Range of MLX speedup | 3.69x to 37.76x |
+| Median MLX rate | 1.969 TFLOP/s |
+| Best MLX rate | 3.757 TFLOP/s |
 
 ## History
 
@@ -135,6 +140,7 @@ Print it with `.venv/bin/python3 scoreboard.py --show-history`.
 | 2026-08-29T15:00:25 | `92be893*` | rows 27 and 28, re-measured on AC power | 13 | 5.60x | 1.131 |
 | 2026-08-29T15:13:00 | `92be893*` | row 29: mx.addmm for every projection | 13 | 6.08x | 1.247 |
 | 2026-08-29T17:37:28 | `f9e3be7*` | row 31: single-pass LayerNorm kernel at d_model < 256 | 13 | 10.98x | 1.561 |
+| 2026-08-29T18:06:35 | `7a97bbe*` | steel reads strided q,k,v and writes head-last: no copy | 13 | 13.88x | 1.969 |
 
 A `*` on the commit means the working tree had uncommitted changes,
 so that reading cannot be reproduced exactly.

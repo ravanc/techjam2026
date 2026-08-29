@@ -20,22 +20,22 @@ Status:
 
 | # | Optimization | Status | Lives in | Applies where | Measured effect |
 |---:|---|---|---|---|---|
-| 1 | MLX behind the torch interface | **KEPT** | `_mlx_transformer()` L512, `UserOptimizedTransformer` L620 | every shape | 4.4x to 7.4x against torch CPU. float32 PASS |
-| 2 | `mx.compile` on the forward pass | **KEPT** | `make_call()` L745 | every shape | 14.203 ms to 13.401 ms (6%) |
-| 3 | float32 LayerNorm accumulation | **KEPT** | `norm()` L543, weight build L687 | every shape | no measured gain. Correct policy. Free |
+| 1 | MLX behind the torch interface | **KEPT** | `_mlx_transformer()` L537, `UserOptimizedTransformer` L668 | every shape | 4.4x to 7.4x against torch CPU. float32 PASS |
+| 2 | `mx.compile` on the forward pass | **KEPT** | `make_call()` L793 | every shape | 14.203 ms to 13.401 ms (6%) |
+| 3 | float32 LayerNorm accumulation | **KEPT** | `norm()` L572, weight build L731 | every shape | no measured gain. Correct policy. Free |
 | 4 | Explicit float32 softmax, not fused | **REVERTED** | — | — | float16 49 to 50 failures. No gain. More code |
 | 5 | `torch.compile` over the MLX class | **RULED OUT** | — | — | crash. Dynamo cannot trace an MLX object |
-| 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L557 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
-| 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L343 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
-| 8 | Blocked causal attention | **KEPT** | `_attention()` L459 | causal, effective `head_dim < 64`, and not on the steel path. **No appendix shape selects it now** | 1.63x at seq 1024, bit exact, when it was the best option. It works around the FALLBACK kernel. Row 25 removes the fallback instead, so every shape that used to block now takes the steel kernel. The code stays for a shape row 25 cannot take |
-| 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L738, use L580 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
-| 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L778 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
+| 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L586 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
+| 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L354 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
+| 8 | Blocked causal attention | **KEPT** | `_attention()` L477 | causal, effective `head_dim < 64`, and not on the steel path. **No appendix shape selects it now** | 1.63x at seq 1024, bit exact, when it was the best option. It works around the FALLBACK kernel. Row 25 removes the fallback instead, so every shape that used to block now takes the steel kernel. The code stays for a shape row 25 cannot take |
+| 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L786, use L621 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
+| 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L826 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
 | 11 | Pad `head_dim` from 8 up to 32 | **REVERTED** | — | — | 0.91x at shape 7. Blocking beats it. Wrong target: 32 is still the fallback kernel. See row 17 |
 | 12 | Full port of the file to MLX | **RULED OUT** | — | — | out of scope. The baseline does not change |
 | 13 | float16 and bfloat16 accuracy | **RULED OUT** | — | — | no implementation can pass. torch `F.sdpa` fails too |
 | 14 | Hand-written Metal kernel for `head_dim = 8` | **KEPT**, as row 25 | `steel_attention.py` | shapes 7 and 11 | done without writing new arithmetic: row 25 compiles Apple's own kernel at `head_dim = 8`. Shape 11 **2.19x**, shape 7 1.48x |
-| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L433 | **nothing now.** Row 25 wins wherever the pad applied, and `plan_kernels()` prefers it | 1.646x at shape 13 when it was the best option. Row 25 gives shape 13 **2.14x over the padded path** at the attention step, with no widened projection. The pad stays in the code for a shape the steel kernel cannot take |
-| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L320 | `head_dim` in {64, 72, 80, 96, 128} gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S1024: 16 MiB fused against 264 MiB fallback. **The set is NOT the range 64..128.** See row 20 |
+| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L444 | **nothing now.** Row 25 wins wherever the pad applied, and `plan_kernels()` prefers it | 1.646x at shape 13 when it was the best option. Row 25 gives shape 13 **2.14x over the padded path** at the attention step, with no widened projection. The pad stays in the code for a shape the steel kernel cannot take |
+| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L331 | `head_dim` in {64, 72, 80, 96, 128} gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S1024: 16 MiB fused against 264 MiB fallback. **The set is NOT the range 64..128.** See row 20 |
 | 19 | Sweep `seq_len` to place the `S >= 4*D` threshold | **OPEN** | — | `head_dim` 32..48 | not measured at the model level. Row 20 measures the crossover at the attention kernel alone |
 | 20 | The fused SDPA set is discrete, not a range | **KEPT** (a fact, not a change) | `profiling/sdpa_dispatch.py` | `head_dim` 1..288, every mask kind, every dtype, `S` 512 and 1024, `B*H` 1 to 256 | the set is {64, 72, 80, 96, 128}. 65, 100 and 127 fall back. Always pad to the SMALLEST member at or above `head_dim`: a larger target lost all 44 rows |
 | 21 | MLX never calls its own `bd192` and `bd256` kernels | **OPEN** (an MLX gap) | — | shape 8, `head_dim=256`, 21.3% of the FLOP-weighted score | the metallib holds `steel_attention_*_bd192_*` and `*_bd256_*` for all 3 dtypes. All 32 dispatch combinations tried take the fallback. No Python workaround: `head_dim` cannot pad down and a head cannot split. Recheck after an MLX upgrade |
@@ -43,15 +43,16 @@ Status:
 | 23 | Return the output as a view of MLX memory, not a copy | **KEPT** | `_to_torch()` L188 | every shape. float32 and float16 alias. bfloat16 and a device change still copy | **71.6 ms of 1590.2 ms at shape 6 (1.047x)**. 1.5 ms of 136 ms at shape 8. Bit exact by `torch.equal` |
 | 15 | Fused FFN | **OPEN** | — | every shape | not measured. Check `mx.compile` first |
 | 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
-| 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L479, gated at `plan_kernels()` L419 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
+| 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L497, gated at `plan_kernels()` L430 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
 | 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **OPEN** | — | shape 8, 21.3% of the FLOP weight | not measured. `bq32_bk32_bd256` needs 68.5 KiB of threadgroup memory against a 32 KiB limit, and `bk16` still needs 41 KiB. `bk8` would fit. Shape 8 is only 7.6% attention, so the ceiling is small |
-| 27 | Gate the steel kernel on a string mask | **KEPT** (a bug fix) | `_attention()` L479 | every padded batch on a shape that selects the steel kernel | a padded causal batch went **FAIL** (822894/1048576 elements wrong) to **PASS** (`max_abs=3.04e-06`). No sweep saw the bug: `--padding-ratio` defaults to 0.0 everywhere. `test_padding.py` now covers it |
-| 28 | Drop the token masks that cannot change the output | **KEPT** | `_mlx_transformer()` L570, L611, L617 | every shape. The unpadded graph now holds no mask operation | bit exact on 18 cases (`test_padding.py`). **1.048x FLOP-weighted** (MLX 841.6 ms to 803.2 ms). Shape 6 1.050x. MPS held at 1.010x and CPU at 1.005x on the same sweep, so the noise floor is about 1% |
-| 29 | `mx.addmm` for every projection, in place of `h @ w + b` | **KEPT** | `_mlx_transformer()` L587-L616 | every shape. Always on | **1.096x FLOP-weighted** (MLX 803.2 ms to 732.6 ms). Shape 6 1.099x, shape 8 1.040x, shape 13 1.092x. Bit exact in float32 on 16 cases |
+| 27 | Gate the steel kernel on a string mask | **KEPT** (a bug fix) | `_mlx_transformer()` L604 | every padded batch on a shape that selects the steel kernel | a padded causal batch went **FAIL** (822894/1048576 elements wrong) to **PASS** (`max_abs=3.04e-06`). No sweep saw the bug: `--padding-ratio` defaults to 0.0 everywhere. `test_padding.py` now covers it |
+| 28 | Drop the token masks that cannot change the output | **KEPT** | `_mlx_transformer()` L599, L659, L665 | every shape. The unpadded graph now holds no mask operation | bit exact on 18 cases (`test_padding.py`). **1.048x FLOP-weighted** (MLX 841.6 ms to 803.2 ms). Shape 6 1.050x. MPS held at 1.010x and CPU at 1.005x on the same sweep, so the noise floor is about 1% |
+| 29 | `mx.addmm` for every projection, in place of `h @ w + b` | **KEPT** | `_mlx_transformer()` L621-L658 | every shape. Always on | **1.096x FLOP-weighted** (MLX 803.2 ms to 732.6 ms). Shape 6 1.099x, shape 8 1.040x, shape 13 1.092x. Bit exact in float32 on 16 cases |
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
-| 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L563, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
-| 32 | Give the attention kernel contiguous q, k and v | **OPEN** | — | every shape on the steel path | not tried at the model level. An MLX transpose is a free strided view, so the head layout costs nothing as a stage and costs inside the attention kernel instead. Shape 6: SDPA is 5.54 ms on the strided view and **2.13 ms on contiguous copies, 2.60x**. A `mx.contiguous` first does not pay (3.29 ms of copy makes the total 5.42 ms, only 1.02x). The win needs the QKV projection to write the head layout directly, or a kernel that reads the stride well |
+| 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L570, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
+| 32 | Give the attention kernel contiguous q, k and v | **REVERTED** | — | — | 1.02x, inside the noise floor: the `mx.contiguous` costs 3.29 ms and saves 3.41 ms. **Row 34 supersedes it and inverts it.** The 3.41 ms was never the read pattern. It was a hidden copy that `ensure_row_contiguous=True` ran inside the kernel launch. Do not make q, k and v contiguous. Tell the kernel their strides. This row also mislabelled its own measurement: see the detail section |
 | 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. **The steel GEMM header exposes an epilogue hook**, so the row 25 hoisting trick can probably reach it. See the detail section |
+| 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -1228,7 +1229,7 @@ nothing broke:
 
     .venv/bin/python3 torch_transformer_benchmark.py
 
-## 32. Give the attention kernel contiguous q, k and v — OPEN
+## 32. Give the attention kernel contiguous q, k and v — REVERTED
 
 Found by `profiling/stage_roofline.py`. An MLX transpose is a **free strided
 view**, not a copy:
@@ -1243,10 +1244,25 @@ So the head layout costs nothing as a stage. An earlier version of the stage
 profiler reported 3.25 ms for it, and that number was **wrong**: the profiler
 added an `mx.concatenate` to force the copy, and measured its own artifact.
 
-The cost is real, but it lands inside the attention kernel, which reads q, k
-and v with a stride instead of in order:
+**Two corrections. Read them before you use the table below.**
 
-| Shape | sdpa on the strided view | sdpa on contiguous copies | ratio | cost of the copy |
+1. The table says "sdpa". Rows 6, 13 and 11 did NOT call
+   `mx.fast.scaled_dot_product_attention`. They called `steel_attention.py`,
+   because `_attention()` routes those shapes to the steel kernel. Measured
+   at the shape 6 dimensions, `mx.fast.scaled_dot_product_attention` takes
+   **16.313 ms on the strided view and 15.807 ms on contiguous copies**. Its
+   ratio is 1.03x, not 2.60x. Only shape 8, the control row, is really SDPA.
+2. The diagnosis "non-coalesced reads" was **wrong**. The kernel never read
+   the stride. `steel_attention.py` passed `ensure_row_contiguous=True`, so
+   MLX copied q, k and v into fresh contiguous buffers before every launch.
+   The 3.41 ms was that hidden copy. The "contiguous copies" column is fast
+   because MLX skips the copy when the input is already contiguous, not
+   because the kernel reads it better. Row 34 removes the copy and keeps the
+   views, and it wins 1.290x at shape 6.
+
+The cost is real, and it lands inside the attention kernel launch:
+
+| Shape | steel on the strided view | steel on contiguous copies | ratio | cost of the copy |
 |---|---:|---:|---:|---:|
 | 6 (B1024 chunk, S128, hd32) | 5.539 ms | **2.131 ms** | **2.60x** | 3.291 ms |
 | 13 (B64, S1024, hd32) | 6.625 ms | 5.148 ms | 1.29x | 1.644 ms |
@@ -1262,15 +1278,22 @@ At shape 6 the copy costs 3.291 ms and saves 3.408 ms. The total goes 5.539
 to 5.422 ms, which is 1.02x and inside the noise floor. The copy itself runs
 at 98 GB/s, near the roof, so there is nothing to tune in it.
 
-**The row stays OPEN.** Two paths could collect the 3.41 ms:
+**The row is REVERTED, and row 34 replaces it.** This row asked the wrong
+question. It assumed the kernel must receive contiguous arrays, and it looked
+for a cheaper way to produce them. Both paths it lists are dead ends:
 
 1. Make the QKV projection write `[B, H, S, head_dim]` directly. The matmul
    output is indexed `(b, s)` by `(h, d)`, so `s` must move inside `h`. That
    is a transpose of the matmul output, and it is not free.
 2. Change the read pattern of `steel_attention.py` to suit the stride.
 
+The kernel already reads any stride. It needs no contiguous array at all. See
+row 34.
+
 Shape 8 is the control: it takes the FALLBACK kernel, and the ratio there is
-0.97x. The strided penalty belongs to the steel kernel, not to every kernel.
+0.97x. That control is still valid, and it now reads differently. Shape 8
+shows no penalty because MLX's own SDPA never ran the extra copy. Only
+`steel_attention.py` did, and only because this project asked it to.
 
 
 ## 33. Fold GELU into the FFN matmul epilogue — OPEN
@@ -1344,3 +1367,119 @@ compiled the steel GEMM through `mx.fast.metal_kernel` yet.
 **The row stays OPEN.** The prize is 4.5% of shape 6. The hook exists, and
 row 25 proves the hoisting method works on MLX's steel headers. The open
 question is the size of the GEMM, not whether the epilogue is reachable.
+
+## 34. Read q, k and v as strided views, and write the head layout directly — KEPT
+
+The model builds q, k and v as free strided views of one fused QKV buffer.
+`mx.split`, `reshape` and `transpose` all return the SAME base pointer, and
+they cost 0.035 ms at the shape 6 chunk. Row 32 already recorded that.
+
+`steel_attention.py` then threw the views away. It passed
+`ensure_row_contiguous=True` to `mx.fast.metal_kernel`, so MLX copied all
+three into fresh contiguous buffers before every launch. Measured at the
+shape 6 chunk, B1024 S128 D128 H4:
+
+| step | ms |
+|---|---:|
+| the kernel on the strided views, as the model called it | 5.364 |
+| the kernel on ready-made contiguous arrays | 2.223 |
+| `mx.contiguous` of q, k and v alone | 3.328 |
+
+The copy was 59% of the attention call, and it bought nothing.
+
+### The kernel never needed it
+
+`steel/attn/kernels/steel_attention.h` advances its pointers through
+`params->Q_strides`, and it hands `params->Q_strides[2]` to the block loader:
+
+    Q += tidl.z * params->Q_strides[0] +   // Batch
+         tidl.y * params->Q_strides[1] +   // Head
+         tidl.x * BQ * params->Q_strides[2];  // Sequence
+
+`params.h` names the contract on line 33: `Query strides (B, H, L, D = 1)`.
+The kernel requires the LAST axis to be contiguous, and nothing else. A view
+of the fused buffer satisfies that: D stays contiguous, and only the batch,
+the head and the sequence strides change.
+
+`mx.fast.metal_kernel` passes the true strides of every array it binds, in a
+`q_strides` buffer. I checked it with a probe kernel. For a `[B, S, 3D]`
+buffer split three ways and viewed as `[B, H, S, D]` it reports
+`[49152, 32, 384, 1]`, which is exactly `(S*3D, head_dim, 3D, 1)`. MLX also
+applies the data offset of the view, so k and v read from the right place.
+
+So `_source()` now copies `q_strides`, `k_strides` and `v_strides` into
+AttnParams, and `ensure_row_contiguous` is False. The strides are the only
+values in the kernel that are not literals.
+
+### The output copy went the same way
+
+`context.transpose(0, 2, 1, 3).reshape(batch, seq_len, d_model)` merged the
+heads. `transpose` makes the array strided, so `reshape` must materialize.
+That copy cost 1.197 ms for each layer at the shape 6 chunk, against 1.185 ms
+for a plain copy of the same bytes. It ran at copy speed, so there was
+nothing to tune in it.
+
+The kernel writes O through `params->O_strides` as well. `head_last=True`
+allocates the output as `[B, S, H, D]` and bakes the strides that place
+element `(b, h, s, d)` there. The merge is then `reshape(B, S, D)` on a
+contiguous array, which is a free view.
+
+Together the two changes remove 4.34 ms from each shape 6 layer.
+
+### The measurement
+
+    .venv/bin/python3 scoreboard.py --cpu-cache \
+        --label "steel reads strided q,k,v and writes head-last: no copy"
+
+| # | Shape | steel? | MLX before | MLX after | gain |
+|---:|---|:---:|---:|---:|---:|
+| 1 | B64 D128 H4 S128 | yes | 5.502 | 4.230 | **1.301x** |
+| 2 | B1 D128 H4 S128 | yes | 0.650 | 0.631 | 1.030x |
+| 3 | B4 D128 H4 S128 | yes | 0.877 | 0.772 | 1.136x |
+| 4 | B16 D128 H4 S128 | yes | 1.764 | 1.396 | 1.263x |
+| 5 | B128 D128 H4 S128 | yes | 11.264 | 8.428 | **1.336x** |
+| 6 | B10000 D128 H4 S128 | yes | 852.760 | 660.808 | **1.290x** |
+| 7 | B64 D32 H4 S128 | yes | 1.395 | 1.145 | 1.219x |
+| 8 | B64 D1024 H4 S128 | no | 128.377 | 127.573 | 1.006x |
+| 9 | B64 D128 H1 S128 | no | 4.438 | 4.427 | 1.002x |
+| 10 | B64 D128 H2 S128 | no | 4.346 | 4.290 | 1.013x |
+| 11 | B64 D128 H16 S128 | yes | 5.342 | 4.362 | 1.225x |
+| 12 | B64 D128 H4 S32 | yes | 1.481 | 1.382 | 1.072x |
+| 13 | B64 D128 H4 S1024 | yes | 59.429 | 50.300 | 1.182x |
+
+Total MLX time 1077.6 ms to 869.7 ms, so **1.239x FLOP-weighted**.
+
+### The controls
+
+1. **MPS held at 1.000x.** Total MPS time was 3578.0 ms before and 3578.2 ms
+   after. The machine did not drift between the two sweeps, so the MLX gain
+   is the change and not the weather.
+2. **The three non-steel shapes did not move.** Shapes 8, 9 and 10 set
+   `steel=False`, and they gave 1.006x, 1.002x and 1.013x. Row 28 measured
+   the noise floor at about 1%, so all three are inside it. The gain belongs
+   to the steel path alone.
+
+The CPU column came from `profiling/cpu_cache.json` on this sweep, so the
+"vs CPU" speedups mix two sweeps. **Do not quote them.** The MLX column is a
+fresh stopwatch reading, and it is what this row rests on.
+
+### Accuracy
+
+All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06, against `atol=0.002`.
+
+`test_padding.py` gives 18 of 18 PASS, every case bit exact. A padded batch
+must not take the steel kernel, because the kernel handles a string mask
+only. Row 27 established that gate. This change moves the gate up one level,
+from `_attention()` into `_mlx_transformer()` L604, because the caller now
+needs the same answer to choose the head merge. The condition is unchanged:
+
+    steel = plan.steel_attention and isinstance(mask, str)
+
+`mask` does not change inside the layer loop, so testing it once is also
+cheaper than testing it for each layer.
+
+A unit check compared the kernel against `mx.fast.scaled_dot_product_attention`
+over `head_dim` 8 and 32, `S` 96, 100, 128 and 256, causal and not causal. The
+strided path and the contiguous path agree **bit exact** (`max_abs = 0.0`),
+and both sit 5.4e-07 to 1.3e-06 from SDPA. `S = 100` covers the ragged case,
+where `S` is not a multiple of the 32-row query block.

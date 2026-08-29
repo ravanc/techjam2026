@@ -494,16 +494,23 @@ def _attention(
     block of length `stop - start` against keys `[0, stop)` gets exactly the
     rows it needs. Verified bit exact against the unblocked call.
     """
-    if steel and isinstance(mask, str):
+    if steel:
         # MLX's own fused kernel, compiled at a head_dim that MLX does not
         # ship. It handles the causal mask itself, so it never blocks. See
         # `steel_attention.py`.
         #
         # The kernel takes a string mask only. A padded batch gives an array
-        # mask, and this test sends that batch to the SDPA call below. Do not
-        # remove the test: `plan_kernels()` sets `steel` from the shape, and
-        # the shape does not tell it if the batch has padding.
-        return steel_sdpa(q, k, v, scale, causal=mask == "causal")
+        # mask, and it must reach the SDPA call below. `_mlx_transformer()`
+        # applies that test and clears `steel`. Do not remove it:
+        # `plan_kernels()` sets the plan from the shape, and the shape does
+        # not tell it if the batch has padding. See OPTIMIZATIONS.md row 27.
+        #
+        # The kernel reads q, k and v as strided views of the fused QKV
+        # buffer, with no copy, and it writes [B, S, H, D] so that the caller
+        # merges the heads with a free reshape. See OPTIMIZATIONS.md row 34.
+        return steel_sdpa(
+            q, k, v, scale, causal=mask == "causal", head_last=True
+        )
 
     if block is None:
         return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
@@ -591,6 +598,11 @@ def _mlx_transformer(
     # unpadded graph holds no mask operation at all.
     valid_tokens = valid_mask[..., None] if padded else None
 
+    # The steel kernel takes a string mask only, so a padded batch keeps the
+    # SDPA path. `mask` does not change inside the loop, so test it once
+    # here. See OPTIMIZATIONS.md row 27.
+    steel = plan.steel_attention and isinstance(mask, str)
+
     def heads(projection: mx.array, last: int = width) -> mx.array:
         return projection.reshape(
             batch, seq_len, num_heads, last
@@ -615,13 +627,21 @@ def _mlx_transformer(
             v = heads(mx.addmm(layer["vb"], h, layer["vw"].T), head_dim)
 
         # An explicit float32 softmax gave no accuracy gain here. Measured.
-        context = _attention(
-            q, k, v, scale, mask, plan.causal_block, plan.steel_attention
-        )
-        if context.shape[-1] != head_dim:
-            # Drop the zero lanes that the padded projection produced.
-            context = context[..., :head_dim]
-        context = context.transpose(0, 2, 1, 3).reshape(batch, seq_len, d_model)
+        context = _attention(q, k, v, scale, mask, plan.causal_block, steel)
+        if steel:
+            # The steel kernel already wrote [B, S, H, D], so merging the
+            # heads is a free reshape. Every other path returns
+            # [B, H, S, D], and the transpose there makes `reshape` copy the
+            # whole activation. That copy cost 1.20 ms of each shape 6
+            # layer. See OPTIMIZATIONS.md row 34.
+            context = context.reshape(batch, seq_len, d_model)
+        else:
+            if context.shape[-1] != head_dim:
+                # Drop the zero lanes that the padded projection produced.
+                context = context[..., :head_dim]
+            context = context.transpose(
+                0, 2, 1, 3
+            ).reshape(batch, seq_len, d_model)
         attention = mx.addmm(layer["ob"], context, layer["ow"].T)
         # The baseline clears the padded rows of the attention output here.
         # This code does not, and the output stays bit exact. Attention is
