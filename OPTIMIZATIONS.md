@@ -55,7 +55,7 @@ Status:
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
-| 37 | A wide `fast_layernorm` variant, so shape 8 reaches row 36 | **OPEN** | — | shape 8 only (`d_model` 1024), 21.3% of the FLOP weight | not tried. Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.4 ms of the 32.1 ms layer, or 4.4%**, so about **0.9% FLOP-weighted**. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
+| 37 | A wide `fast_layernorm` variant, so shape 8 reaches row 36 | **OPEN** | — | shape 8 only (`d_model` 1024), 21.3% of the FLOP weight | not tried. Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.53 ms of the 32.51 ms layer, or 4.7%**, so about **1.0% FLOP-weighted**. Measured directly after row 36: the two residual adds are 0.785 ms and 0.834 ms, and the C operand would cost 0.043 ms each. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -1677,7 +1677,7 @@ itself did not change.
 Shape 8 carries 21.3% of the FLOP weight and gains nothing, because
 `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free
 there (0.043 ms), so a wide `fast_layernorm` variant would collect about
-1.4 ms of its 32.1 ms layer, or 4.4%. That is row 37, and it is OPEN.
+1.53 ms of its 32.51 ms layer, or 4.7%. That is row 37, and it is OPEN.
 
 ## 37. A wide `fast_layernorm` variant, so shape 8 reaches row 36 — OPEN
 
@@ -1698,9 +1698,10 @@ Measured at the shape 8 projection size, 8192 rows by 1024:
 | **cost of the full C operand** | **0.043** |
 
 The C operand is almost free here. Shape 8 is compute bound, so the extra read
-hides under the matmul. Two residual adds per block is about **1.4 ms of the
-32.1 ms layer, or 4.4%**. At a 21.3% FLOP weight that is about **0.9%
-FLOP-weighted**.
+hides under the matmul. Two residual adds per block is **1.53 ms of the
+32.51 ms layer, or 4.7%**. At a 21.3% FLOP weight that is about **1.0%
+FLOP-weighted**. Measured after row 36: the two adds are 0.785 ms and
+0.834 ms, and the C operand would cost 0.043 ms each.
 
 ### The cost
 

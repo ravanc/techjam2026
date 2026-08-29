@@ -193,8 +193,13 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     # model chooses between them, so a fixed choice here measures the wrong
     # kernel and hides the effect of row 31.
     norm_kernel = fast_layer_norm if plan.fast_layer_norm else mx.fast.layer_norm
-    norm_name = "ln%d (%s)" % (
-        0, "fast_layernorm" if plan.fast_layer_norm else "mx.fast")
+    # Row 36 defers the residual biases into the LayerNorm and gives the
+    # residual add to the projection GEMM as its C operand. The stage list
+    # must follow the block, or it measures kernels the model never runs.
+    defer = plan.defer_bias
+    norm_name = "ln%d (%s%s)" % (
+        0, "fast_layernorm" if plan.fast_layer_norm else "mx.fast",
+        ", +bias" if defer else "")
 
     x = mx.random.normal((chunk, seq, d_model)).astype(mx.float32)
     mx.eval(x)
@@ -204,7 +209,17 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
         return projection.reshape(chunk, seq, heads_n, last).transpose(0, 2, 1, 3)
 
     # ---- build the operands of each stage, evaluated -------------------
-    h1 = norm_kernel(x, layer["n1w"], layer["n1b"], LAYER_NORM_EPS)
+    # `carry` is the deferred bias vector of row 36. It is (d_model,), never
+    # a full activation.
+    carry = layer["ob"].astype(mx.float32) if defer else None
+
+    def do_norm(value, wkey, bkey):
+        if defer:
+            return norm_kernel(value, layer[wkey], layer[bkey],
+                               LAYER_NORM_EPS, pre_bias=carry)
+        return norm_kernel(value, layer[wkey], layer[bkey], LAYER_NORM_EPS)
+
+    h1 = do_norm(x, "n1w", "n1b")
     mx.eval(h1)
     fused = mx.addmm(layer["qkvb"], h1, layer["qkvw"])
     mx.eval(fused)
@@ -215,11 +230,16 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     ctx_cut = ctx[..., :head_dim] if ctx.shape[-1] != head_dim else ctx
     merged = ctx_cut.transpose(0, 2, 1, 3).reshape(chunk, seq, d_model)
     mx.eval(merged)
-    attn_out = mx.addmm(layer["ob"], merged, layer["ow"].T)
-    mx.eval(attn_out)
-    x1 = x + attn_out
+    if defer:
+        # The residual rides in the C operand of the projection GEMM.
+        x1 = mx.addmm(x, merged, layer["ow"].T)
+        attn_out = None
+    else:
+        attn_out = mx.addmm(layer["ob"], merged, layer["ow"].T)
+        mx.eval(attn_out)
+        x1 = x + attn_out
     mx.eval(x1)
-    h2 = norm_kernel(x1, layer["n2w"], layer["n2b"], LAYER_NORM_EPS)
+    h2 = do_norm(x1, "n2w", "n2b")
     mx.eval(h2)
     hidden = mlx_nn.gelu(mx.addmm(layer["fib"], h2, layer["fiw"].T))
     mx.eval(hidden)
@@ -262,8 +282,7 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
 
     # 1. LayerNorm. No matmul. Reads x, writes h.
     add(norm_name.replace("ln0", "ln1"),
-        lambda: norm_kernel(x, layer["n1w"], layer["n1b"], LAYER_NORM_EPS),
-        0.0, 2 * act)
+        lambda: do_norm(x, "n1w", "n1b"), 0.0, 2 * act)
 
     # 2. QKV projection. Reads h and the weight, writes 3 head-width acts.
     qkv_w = d_model * 3 * heads_n * width * ITEM
@@ -296,28 +315,41 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
         return c.transpose(0, 2, 1, 3).reshape(chunk, seq, d_model)
     add("merge heads", build_merge, 0.0, 2 * act, "layout only")
 
-    # 6. Output projection.
-    add("out proj (addmm)",
-        lambda: mx.addmm(layer["ob"], merged, layer["ow"].T),
-        2.0 * tokens * d_model * d_model,
-        2 * act + d_model * d_model * ITEM)
+    # 6. Output projection. Row 36 gives it the residual as its C operand,
+    # so it reads one more activation and the separate add disappears.
+    if defer:
+        add("out proj (+residual)",
+            lambda: mx.addmm(x, merged, layer["ow"].T),
+            2.0 * tokens * d_model * d_model,
+            3 * act + d_model * d_model * ITEM, "residual in C")
+    else:
+        add("out proj (addmm)",
+            lambda: mx.addmm(layer["ob"], merged, layer["ow"].T),
+            2.0 * tokens * d_model * d_model,
+            2 * act + d_model * d_model * ITEM)
 
-    # 7. Residual add.
-    add("residual add", lambda: x + attn_out, 0.0, 3 * act)
+        # 7. Residual add. Row 36 removed this kernel.
+        add("residual add", lambda: x + attn_out, 0.0, 3 * act)
 
-    # 8-11. The FFN, for the share it takes of the block.
+    # The FFN, for the share it takes of the block.
     add(norm_name.replace("ln0", "ln2"),
-        lambda: norm_kernel(x1, layer["n2w"], layer["n2b"], LAYER_NORM_EPS),
-        0.0, 2 * act)
+        lambda: do_norm(x1, "n2w", "n2b"), 0.0, 2 * act)
     add("ffn_in + gelu",
         lambda: mlx_nn.gelu(mx.addmm(layer["fib"], h2, layer["fiw"].T)),
         2.0 * tokens * d_model * ffn,
         act + d_model * ffn * ITEM + tokens * ffn * ITEM)
-    add("ffn_out (addmm)",
-        lambda: mx.addmm(layer["fob"], hidden, layer["fow"].T),
-        2.0 * tokens * ffn * d_model,
-        tokens * ffn * ITEM + ffn * d_model * ITEM + act)
-    add("residual add 2", lambda: x1 + attn_out, 0.0, 3 * act)
+    if defer:
+        add("ffn_out (+residual)",
+            lambda: mx.addmm(x1, hidden, layer["fow"].T),
+            2.0 * tokens * ffn * d_model,
+            tokens * ffn * ITEM + ffn * d_model * ITEM + 2 * act,
+            "residual in C")
+    else:
+        add("ffn_out (addmm)",
+            lambda: mx.addmm(layer["fob"], hidden, layer["fow"].T),
+            2.0 * tokens * ffn * d_model,
+            tokens * ffn * ITEM + ffn * d_model * ITEM + act)
+        add("residual add 2", lambda: x1 + attn_out, 0.0, 3 * act)
 
     # The SDPA peak memory says which kernel ran. A delta near the score
     # matrix size means the fallback materialized B x H x S x S.
@@ -349,7 +381,9 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     del contiguous
 
     total_ms = sum(s["ms"] for s in stages)
-    attn_ms = sum(s["ms"] for s in stages[:7])
+    # Stages up to and including the output projection. Row 36 removed the
+    # separate residual add, so the count depends on the plan.
+    attn_ms = sum(s["ms"] for s in stages[:6 if defer else 7])
 
     # The real model, for the same shape. The GPU overlaps the layers, so the
     # sum of the isolated stages is always larger. The gap is what the
