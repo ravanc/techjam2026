@@ -11,10 +11,11 @@ the new measurement here.
 
 | Condition | Use |
 |---|---|
-| `head_dim` 64..128 | one full `mx.fast.scaled_dot_product_attention` call |
+| `head_dim` in {64, 72, 80, 96, 128} | one full `mx.fast.scaled_dot_product_attention` call |
+| `head_dim` not in that set, causal, no padded batch | `steel_attention.py`: MLX's own fused kernel, compiled at the TRUE width. This beats both rows below, so they no longer select |
 | `head_dim <= 16`, causal, `S > 64`, `B*H >= 64` | blocked causal, block 32 |
 | `head_dim` 17..63, causal, `S > 64`, `B*H >= 64` | blocked causal, block 64 |
-| `head_dim` 32..48 and `S >= 4*D` | pad `head_dim` to 64, then one full call |
+| `head_dim` not in that set, and the steel kernel cannot run | pad up to the next member of the set |
 | always | one fused `[D, 3D]` QKV matmul |
 | activation over 64 MiB | chunk the batch, full depth per chunk |
 
@@ -22,27 +23,73 @@ the new measurement here.
 
 **This is the most useful fact in this file. Read it before section 1.**
 
-`mx.fast.scaled_dot_product_attention` dispatches to a fused flash kernel
-**only for `head_dim` 64 to 128**. Outside that range it accepts the call,
-returns a correct answer, and uses a fallback that materializes the whole
-`B x H x S x S` score matrix.
+`mx.fast.scaled_dot_product_attention` accepts every `head_dim`. It reaches
+the fused flash kernel for **five values only**:
 
-Measured by peak GPU memory at B=8, H=8, S=2048, where the score matrix
-would be 1024 MiB. The column is `peak - base`, in MiB:
+    FUSED_HEAD_DIMS = (64, 72, 80, 96, 128)
 
-| head_dim | 8 | 16 | 32 | 48 | 64 | 72 | 96 | 128 | 256 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| peak MiB | 1048 | 1068 | 1108 | 1148 | **128** | **144** | **192** | **256** | 1668 |
-| path | fallback | fallback | fallback | fallback | **fused** | **fused** | **fused** | **fused** | fallback |
+Outside that set it returns a correct answer through a fallback that
+materializes the whole `B x H x S x S` score matrix.
 
-Reproduce it by `mx.reset_peak_memory()` and `mx.get_peak_memory()` around
-one call.
+**Corrected.** An earlier version of this file said "`head_dim` 64 to 128",
+a contiguous range. That is WRONG. The earlier sweep tested 8, 16, 32, 48,
+64, 72, 96, 128 and 256, and every value it tested inside 64..128 happens to
+be a member of the set. `head_dim` 65, 100 and 127 are on the fallback.
 
-This one fact explains section 1 and section 3. The 18x spread of efficiency
-against `head_dim` is not a curve. It is a cliff between two kernels.
+Measured over `head_dim` 1 to 288, by peak GPU memory. The set does not move
+with:
 
-Of the appendix shapes, only shape 9 (`head_dim=128`) and shape 10
-(`head_dim=64`) reach the fused kernel by themselves.
+| Axis tested | Values | Result |
+|---|---|---|
+| mask | `None`, `"causal"`, bool array, float additive array | same set |
+| dtype | float32, float16, bfloat16 | same set |
+| `S` | 512, 1024 | same set |
+| `B * H` | 1, 64, 256 | same set |
+| kv heads | equal to q heads, and GQA with 2 | same set |
+
+Reproduce with:
+
+    .venv/bin/python3 profiling/sdpa_dispatch.py --mode path --max-head-dim 288
+
+Peak GPU memory at B=8, H=8, S=1024, where the score matrix is 256 MiB. The
+column is `peak - base`, in MiB:
+
+| head_dim | 32 | 63 | **64** | 65 | **72** | **80** | 88 | **96** | 100 | **128** | 192 | 256 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| peak MiB | 264 | 272 | **16** | 273 | **18** | **20** | 278 | **24** | 281 | **32** | 352 | 384 |
+| path | fb | fb | **fused** | fb | **fused** | **fused** | fb | **fused** | fb | **fused** | fb | fb |
+
+### Why the set has those five values
+
+The kernels are compiled Metal templates. Read the names out of the shipped
+metallib:
+
+    strings .venv/lib/python3.13/site-packages/mlx/lib/mlx.metallib \
+      | grep -E "^steel_attention" | sed 's/llvm$//' | sort -u
+
+MLX 0.32.2 ships `bd64`, `bd72`, `bd80`, `bd96`, `bd128`, `bd192` and
+`bd256`, for each of float32, float16 and bfloat16, and for a bool mask and
+a typed mask. So the set is a list of compiled tile widths. It is not a
+statement about where flash attention is worth using.
+
+### MLX ships two kernels that it never calls
+
+**`bd192` and `bd256` are in the metallib, and the dispatch never reaches
+them.** Every axis in the table above was tested at `head_dim` 192 and 256,
+and all 32 combinations took the fallback. This is a gap in the C++ dispatch
+guard, not a missing kernel.
+
+It costs shape 8 (`d_model=1024`, `num_heads=4`, so `head_dim=256`) the
+fused path. Shape 8 carries 21.3% of the FLOP-weighted score. A `bd256`
+`steel_attention` kernel exists on this machine and MLX will not call it.
+Check this again after an MLX upgrade.
+
+There is no workaround from Python. `head_dim` cannot be padded down, and a
+head cannot be split, because the softmax runs over the full dot product.
+
+Of the appendix shapes, only shape 9 (`head_dim=128`), shape 10 and shape 14
+(`head_dim=64`) reach the fused kernel by themselves. Shape 8 has
+`head_dim=256` and takes the fallback.
 
 ## 1. The FALLBACK does not skip the causal triangle. The FUSED kernel does.
 
@@ -76,7 +123,7 @@ So the two kernels behave in opposite ways:
   worse on every shape tried.
 
 Therefore blocked causal attention is a workaround for the fallback path.
-Do not apply it once the head reaches the fused range.
+Do not apply it once the head reaches the fused set of section 0.
 
 ## 2. Blocked causal attention
 
@@ -116,13 +163,32 @@ Block size sweep, milliseconds, best of each row marked:
 
 Three rules cover all 13 rows:
 
-1. **`head_dim >= 64`: do not block.** A wide head is already efficient, so
-   blocking only adds kernel launches. See section 3.
+1. **`head_dim` in the fused set: do not block.** The fused kernel skips the
+   triangle itself, so blocking only adds kernel launches. See section 1.
 2. **`S <= 64`: do not block.** There is no triangle worth skipping.
 3. **`B * H < 64`: do not block.** The GPU is not full, so launch cost
    dominates the saved arithmetic.
 
 Otherwise block, at 32 for `head_dim <= 16` and 64 above it.
+
+**Corrected.** Rule 1 said "`head_dim >= 64`: do not block", and gave "a wide
+head is already efficient" as the reason. The reason is wrong. `head_dim=256`
+is on the fallback, so it is NOT efficient, and the rule refuses to block it.
+The `head_dim=256` row above measured `full` as the winner, so the row itself
+still stands, but only because `S=128` leaves no triangle worth skipping.
+
+Sweep S at `head_dim=256`, B=64, H=4, `mask="causal"`, median ms:
+
+| S | full | blk32 | blk64 | blk128 | Best |
+|---:|---:|---:|---:|---:|---|
+| 128 | **2.456** | 3.558 | 3.047 | — | full |
+| 256 | 7.677 | 9.816 | 7.889 | **7.508** | blk128, 1.02x |
+| 512 | 27.922 | 30.964 | 22.573 | **21.174** | blk128, **1.32x** |
+| 1024 | 104.439 | 109.669 | 74.589 | **67.181** | blk128, **1.55x** |
+
+So a wide head that misses the fused set must be blocked once `S` is long
+enough. `plan_kernels()` does not do this yet. No appendix shape reaches it:
+shape 8 is the only `head_dim > 128` shape and it runs at `S=128`.
 
 ## 3. SDPA efficiency depends on `head_dim`, by 18x
 
@@ -145,6 +211,67 @@ rows.
 `head_dim = 8` is the worst case in the appendix table. It appears in shape 7
 (D=32, H=4) and shape 11 (D=128, H=16). The reduction is 8 elements long, so
 the kernel spends its time on addressing, not on arithmetic.
+
+### The pad crossover, measured at the attention kernel
+
+**Where does the pad start to pay?** Time the direct call at the true
+`head_dim` against a padded call at each member of the fused set. The pad
+cost is inside the number, so this is a lower bound: a model that folds the
+pad into the QKV weight pays less.
+
+    .venv/bin/python3 profiling/sdpa_dispatch.py --mode pad \
+        --batch 8 --heads 8 --seq 1024 --repeats 30 --check
+
+**Result 1: always target the SMALLEST member of the set at or above
+`head_dim`.** A larger target lost in every one of the 44 rows measured. The
+fused kernel costs time in proportion to the padded width, at about the same
+rate for all five widths, so a wider tile only buys arithmetic nobody wants.
+
+B=8, H=8, S=1024, `mask="causal"`, median ms:
+
+| head_dim | direct | pad64 | pad72 | pad80 | pad96 | pad128 | Best |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 8 | 13.153 | **4.255** | 4.837 | 5.720 | 6.791 | 9.254 | pad64, 3.09x |
+| 32 | 13.656 | **3.968** | 4.674 | 5.367 | 6.481 | 8.716 | pad64, 3.44x |
+| 63 | 14.402 | **3.856** | 4.611 | 5.436 | 6.617 | 8.782 | pad64, 3.74x |
+| 65 | 15.623 | — | **4.538** | 5.343 | 6.464 | 8.741 | pad72, 3.44x |
+| 76 | 15.807 | — | — | **5.247** | 6.381 | 8.687 | pad80, 3.01x |
+| 88 | 16.284 | — | — | — | **6.239** | 8.555 | pad96, 2.61x |
+| 100 | 17.072 | — | — | — | — | **8.523** | pad128, 2.00x |
+| 127 | 17.833 | — | — | — | — | **8.233** | pad128, 2.17x |
+
+`--check` reports `max_abs_diff` between 8.9e-07 and 2.5e-06 on every row,
+which is the float32 reordering noise. The pad is exact.
+
+**Result 2: the crossover moves with `S`, not with the pad ratio.** At
+S=1024 every pad wins, even 8 -> 128, a ratio of 16. At S=128 the pad loses
+at both ends. The fallback grows as `S*S` while the fused kernel grows as
+`S*S/2` with a far better constant, so a long sequence buries any pad ratio.
+
+Best target and gain, at the attention kernel only:
+
+| head_dim | target | S=128 (B64 H4) | S=256 (B8 H8) | S=1024 (B8 H8) |
+|---:|---:|---:|---:|---:|
+| 8 | 64 | 1.00x (loses) | 1.52x | 3.09x |
+| 16 | 64 | 1.03x | 1.57x | 3.31x |
+| 32 | 64 | 1.22x | 1.65x | 3.44x |
+| 48 | 64 | 1.31x | 1.66x | 3.56x |
+| 63 | 64 | 1.46x | 1.96x | 3.74x |
+| 65 | 72 | 1.28x | 1.69x | 3.44x |
+| 70 | 72 | 1.33x | 1.75x | 3.51x |
+| 76 | 80 | 1.24x | 1.56x | 3.01x |
+| 88 | 96 | 1.12x | 1.44x | 2.61x |
+| 100 | 128 | 1.00x (loses) | 1.11x | 2.00x |
+| 112 | 128 | 1.00x (loses) | 1.17x | 2.06x |
+| 127 | 128 | 1.10x | 1.27x | 2.17x |
+
+The saddle at S=128 sits near `head_dim=16` for the 64 target, and the
+96 -> 128 step fails at `head_dim` 100 and 112.
+
+**This table is the attention kernel alone. It is not the rule for the
+model.** The pad also widens the QKV projection and the output projection by
+the same ratio, and those carry `6*D*D` per token against `4*S*D` for
+attention. The model-level gate stays the one measured below.
 
 ### Padding `head_dim` to reach the fused kernel
 

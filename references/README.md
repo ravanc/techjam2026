@@ -38,3 +38,4 @@ Rules for this directory:
 | `appendix_cases.py` | The 14 shapes as code, with per-case selection |
 | `flops.py` | The FLOP model, and the matmul rates measured here. |
 | `scoreboard.py` | The graded run: CPU/MPS/MLX timing for every shape. Writes `scoreboard.md` and appends `profiling/history.jsonl`. |
+| `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel, and when a pad into that set pays. |

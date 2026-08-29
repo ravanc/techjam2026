@@ -188,9 +188,28 @@ def _to_mlx(tensor: torch.Tensor) -> mx.array:
 def _to_torch(
     array: mx.array, dtype: torch.dtype, device: torch.device
 ) -> torch.Tensor:
+    """
+    Wrap an MLX array as a torch tensor. Do not copy the bytes.
+
+    MLX allocates every array in unified memory, so the CPU reads an MLX
+    buffer with no transfer. `np.asarray` returns a view of that buffer.
+    `np.array` returns a copy. The copy is pure overhead, and `forward()`
+    runs it inside the timed region on every call.
+
+    The result SHARES memory with `array`. A write to the tensor changes
+    the MLX array. The harness only reads the result, so this is safe.
+    The chain tensor -> ndarray -> memoryview -> array holds a reference,
+    so MLX cannot free the buffer while the tensor lives.
+
+    `.to()` copies when the dtype or the device changes. The bfloat16 path
+    and a non-CPU device therefore return an independent tensor.
+
+    The caller must evaluate `array` first. `forward()` does this.
+    """
     if array.dtype == mx.bfloat16:
         array = array.astype(mx.float32)
-    return torch.from_numpy(np.array(array)).to(device=device, dtype=dtype)
+        mx.eval(array)
+    return torch.from_numpy(np.asarray(array)).to(device=device, dtype=dtype)
 
 
 def _dtype_size(dtype: mx.Dtype) -> int:
@@ -213,6 +232,7 @@ class KernelPlan:
     causal_block: Optional[int]
     batch_chunk: Optional[int]
     pad_head_dim: Optional[int] = None
+    steel_attention: bool = False
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -220,7 +240,8 @@ class KernelPlan:
         pad = self.pad_head_dim if self.pad_head_dim else "none"
         return (
             f"fuse_qkv={self.fuse_qkv} causal_block={block} "
-            f"batch_chunk={chunk} pad_head_dim={pad}"
+            f"batch_chunk={chunk} pad_head_dim={pad} "
+            f"steel={self.steel_attention}"
         )
 
 
@@ -279,8 +300,44 @@ MIN_BLOCK_SEQ = 64
 #
 # `OPTIMIZATIONS.md` attempt 11 padded 8 up to 32 and reverted it. 32 is
 # still on the fallback path, which is why it failed. The target is 64.
-SDPA_FUSED_MIN_HEAD_DIM = 64
-SDPA_FUSED_MAX_HEAD_DIM = 128
+#
+# THE SET IS DISCRETE. It is not the range 64..128. MLX compiles one Metal
+# template for each width, and it ships five that the dispatch reaches:
+# `steel_attention_*_bd64_*`, `bd72`, `bd80`, `bd96` and `bd128`. A
+# head_dim of 65, 100 or 127 sits inside the old range and takes the
+# fallback. Measured over head_dim 1..288, by peak GPU memory. The set does
+# not move with the mask kind, the dtype, the sequence length or B * H.
+#
+#     .venv/bin/python3 profiling/sdpa_dispatch.py --mode path --max-head-dim 288
+#
+# MLX also ships `bd192` and `bd256` and never calls them. That costs shape
+# 8 (head_dim = 256) the fused path, and Python cannot reach around it.
+# See `OPTIMIZATIONS.md` rows 20 and 21.
+from steel_attention import steel_attention as steel_sdpa
+from steel_attention import supports as steel_supports
+
+SDPA_FUSED_HEAD_DIMS = (64, 72, 80, 96, 128)
+SDPA_FUSED_MIN_HEAD_DIM = SDPA_FUSED_HEAD_DIMS[0]
+SDPA_FUSED_MAX_HEAD_DIM = SDPA_FUSED_HEAD_DIMS[-1]
+
+
+def sdpa_pad_width(head_dim: int) -> Optional[int]:
+    """
+    Return the width to pad `head_dim` up to, so the call reaches the fused
+    kernel. Return None when the head already fits, or when it is too wide
+    to reach any member of the set.
+
+    Always take the SMALLEST member at or above `head_dim`. A wider target
+    lost every row of the crossover sweep: the fused kernel costs time in
+    proportion to the padded width, so extra width buys nothing. See
+    `references/mlx-tensorops.md` section 3.
+    """
+    if head_dim in SDPA_FUSED_HEAD_DIMS:
+        return None
+    for width in SDPA_FUSED_HEAD_DIMS:
+        if width > head_dim:
+            return width
+    return None
 
 
 def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
@@ -352,18 +409,32 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     # The threshold sits at S >= 4*D, between shape 1 (S = D, no gain) and
     # shape 13 (S = 8*D, 1.65x). **It rests on one measured point.** Sweep
     # S at fixed D before you move it. See OPTIMIZATIONS.md row 17.
+    # `steel_attention.py` compiles MLX's own fused kernel at the TRUE
+    # head_dim, so it needs no pad and no blocking. Prefer it wherever it
+    # runs: it removes the S x S score matrix without widening any matmul.
+    # It supports a string causal mask only, so a padded batch keeps the
+    # old path. See OPTIMIZATIONS.md row 23.
+    use_steel = (
+        config.causal
+        and head_dim not in SDPA_FUSED_HEAD_DIMS
+        and steel_supports(head_dim)
+    )
+
     pad_head_dim: Optional[int] = None
+    target = sdpa_pad_width(head_dim)
     if (
-        head_dim < SDPA_FUSED_MIN_HEAD_DIM
-        and SDPA_FUSED_MIN_HEAD_DIM <= 2 * head_dim
+        not use_steel
+        and target is not None
+        and target <= 2 * head_dim
         and config.seq_len >= 4 * config.d_model
     ):
-        pad_head_dim = SDPA_FUSED_MIN_HEAD_DIM
+        pad_head_dim = target
     effective_head_dim = pad_head_dim or head_dim
 
     causal_block: Optional[int] = None
     if (
         config.causal
+        and not use_steel
         and effective_head_dim < 64
         and config.seq_len > MIN_BLOCK_SEQ
         and parallel >= MIN_BLOCK_PARALLEL
@@ -379,6 +450,7 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         causal_block=causal_block,
         batch_chunk=batch_chunk,
         pad_head_dim=pad_head_dim,
+        steel_attention=use_steel,
     )
 
 
@@ -389,6 +461,7 @@ def _attention(
     scale: float,
     mask,
     block: Optional[int],
+    steel: bool = False,
 ) -> mx.array:
     """
     Causal attention, with or without query blocking.
@@ -401,6 +474,12 @@ def _attention(
     block of length `stop - start` against keys `[0, stop)` gets exactly the
     rows it needs. Verified bit exact against the unblocked call.
     """
+    if steel:
+        # MLX's own fused kernel, compiled at a head_dim that MLX does not
+        # ship. It handles the causal mask itself, so it never blocks. See
+        # `steel_attention.py`.
+        return steel_sdpa(q, k, v, scale, causal=mask == "causal")
+
     if block is None:
         return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
 
@@ -498,7 +577,9 @@ def _mlx_transformer(
             v = heads(h @ layer["vw"].T + layer["vb"], head_dim)
 
         # An explicit float32 softmax gave no accuracy gain here. Measured.
-        context = _attention(q, k, v, scale, mask, plan.causal_block)
+        context = _attention(
+            q, k, v, scale, mask, plan.causal_block, plan.steel_attention
+        )
         if context.shape[-1] != head_dim:
             # Drop the zero lanes that the padded projection produced.
             context = context[..., :head_dim]
@@ -523,8 +604,10 @@ class UserOptimizedTransformer(BaselineTransformer):
     and .eval() operate with no change. forward() converts the input to MLX,
     calculates the result with MLX, and converts the result back to torch.
 
-    The two conversions are inside the timed region. They cost less than 1%
-    of the call at the default size.
+    The two conversions are inside the timed region. The input conversion
+    copies, because MLX must own its memory. The output conversion does
+    not: `_to_torch()` returns a view of the MLX buffer. See
+    OPTIMIZATIONS.md row 23 for what the boundary costs.
 
     Accuracy at the harness defaults, atol=0.002 and rtol=0.02:
 

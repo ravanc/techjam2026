@@ -27,18 +27,24 @@ Status:
 | 5 | `torch.compile` over the MLX class | **RULED OUT** | — | — | crash. Dynamo cannot trace an MLX object |
 | 6 | Mask form selected by the input | **KEPT** | `_mlx_transformer()` L391 | seq_len >= 512, no padding | 3.9% at seq 512. 1.7% at seq 2048. none at seq 128 |
 | 7 | Shape-aware kernel plan (`KernelPlan`) | **KEPT** | `plan_kernels()` L272 | every shape. It selects 8, 9 and 10 | 1.57x at shape 13. 1.31x at shape 6 |
-| 8 | Blocked causal attention | **KEPT** | `_attention()` L371 | causal, effective `head_dim < 64`, `seq_len > 64`, `batch * heads >= 64` | 1.63x at seq 1024. Bit exact. It is a workaround for the FALLBACK kernel: the fused kernel skips the triangle itself, at 0.55x. See row 18 |
+| 8 | Blocked causal attention | **KEPT** | `_attention()` L457 | causal, effective `head_dim < 64`, and not on the steel path. **No appendix shape selects it now** | 1.63x at seq 1024, bit exact, when it was the best option. It works around the FALLBACK kernel. Row 25 removes the fallback instead, so every shape that used to block now takes the steel kernel. The code stays for a shape row 25 cannot take |
 | 9 | Fused `[D, 3D]` QKV matmul | **KEPT** | weight build L524, use L411 | every shape. Always on | 1.99x at batch 1. 1.00x at d_model 1024 |
 | 10 | Batch chunking, full depth for each chunk | **KEPT** | `forward()` L568 | one activation over 64 MiB. Shape 6 only | peak 9.16 GiB to 2.68 GiB, and 1.05x faster |
 | 11 | Pad `head_dim` from 8 up to 32 | **REVERTED** | — | — | 0.91x at shape 7. Blocking beats it. Wrong target: 32 is still the fallback kernel. See row 17 |
 | 12 | Full port of the file to MLX | **RULED OUT** | — | — | out of scope. The baseline does not change |
 | 13 | float16 and bfloat16 accuracy | **RULED OUT** | — | — | no implementation can pass. torch `F.sdpa` fails too |
-| 14 | Hand-written Metal kernel for `head_dim = 8` | **OPEN** | — | shapes 7 and 11 | not measured. `mx.fast.sdpa` falls back to a materializing kernel below `head_dim = 64`. Padding cannot rescue these two: 0.894x and 0.756x. See row 17 |
-| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L339 | `head_dim >= 32`, `head_dim < 64` and `seq_len >= 4 * d_model`. Shape 13 only | **1.646x at shape 13**. A blanket `head_dim < 64` rule gives 0.983x FLOP-weighted and loses |
-| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L268 | `head_dim` 64..128 gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S2048: 128 MiB fused against 1048 MiB fallback |
-| 19 | Sweep `seq_len` to place the `S >= 4*D` threshold | **OPEN** | — | `head_dim` 32..48 | not measured. Row 17 rests on one point |
+| 14 | Hand-written Metal kernel for `head_dim = 8` | **KEPT**, as row 25 | `steel_attention.py` | shapes 7 and 11 | done without writing new arithmetic: row 25 compiles Apple's own kernel at `head_dim = 8`. Shape 11 **2.19x**, shape 7 1.48x |
+| 17 | Pad `head_dim` to 64 to reach the fused SDPA kernel | **KEPT** | `plan_kernels()` L425 | **nothing now.** Row 25 wins wherever the pad applied, and `plan_kernels()` prefers it | 1.646x at shape 13 when it was the best option. Row 25 gives shape 13 **2.14x over the padded path** at the attention step, with no widened projection. The pad stays in the code for a shape the steel kernel cannot take |
+| 18 | MLX dispatches SDPA to two different kernels | **KEPT** (a fact, not a change) | `SDPA_FUSED_MIN_HEAD_DIM` L268 | `head_dim` in {64, 72, 80, 96, 128} gets the fused kernel. Everything else materializes `B x H x S x S` | peak memory at B8 H8 S1024: 16 MiB fused against 264 MiB fallback. **The set is NOT the range 64..128.** See row 20 |
+| 19 | Sweep `seq_len` to place the `S >= 4*D` threshold | **OPEN** | — | `head_dim` 32..48 | not measured at the model level. Row 20 measures the crossover at the attention kernel alone |
+| 20 | The fused SDPA set is discrete, not a range | **KEPT** (a fact, not a change) | `profiling/sdpa_dispatch.py` | `head_dim` 1..288, every mask kind, every dtype, `S` 512 and 1024, `B*H` 1 to 256 | the set is {64, 72, 80, 96, 128}. 65, 100 and 127 fall back. Always pad to the SMALLEST member at or above `head_dim`: a larger target lost all 44 rows |
+| 21 | MLX never calls its own `bd192` and `bd256` kernels | **OPEN** (an MLX gap) | — | shape 8, `head_dim=256`, 21.3% of the FLOP-weighted score | the metallib holds `steel_attention_*_bd192_*` and `*_bd256_*` for all 3 dtypes. All 32 dispatch combinations tried take the fallback. No Python workaround: `head_dim` cannot pad down and a head cannot split. Recheck after an MLX upgrade |
+| 22 | Block a causal wide head that misses the fused set | **OPEN** | — | `head_dim > 128` and long `S`. No appendix shape reaches it | `head_dim=256`, B64 H4: S=128 full wins, S=512 blk128 gives 1.32x, S=1024 blk128 gives **1.55x**. `plan_kernels()` refuses to block because it tests `effective_head_dim < 64` |
+| 23 | Return the output as a view of MLX memory, not a copy | **KEPT** | `_to_torch()` L188 | every shape. float32 and float16 alias. bfloat16 and a device change still copy | **71.6 ms of 1590.2 ms at shape 6 (1.047x)**. 1.5 ms of 136 ms at shape 8. Bit exact by `torch.equal` |
 | 15 | Fused FFN | **OPEN** | — | every shape | not measured. Check `mx.compile` first |
 | 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
+| 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L477, gated at `plan_kernels()` L417 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
+| 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **OPEN** | — | shape 8, 21.3% of the FLOP weight | not measured. `bq32_bk32_bd256` needs 68.5 KiB of threadgroup memory against a 32 KiB limit, and `bk16` still needs 41 KiB. `bk8` would fit. Shape 8 is only 7.6% attention, so the ceiling is small |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -523,19 +529,77 @@ and 2048, with the padded and the unpadded path, end to end. Move the
 threshold to where the curve crosses 1.0. Do not move it on a model: the
 arithmetic model already failed on 4 of 10 shapes.
 
-## Cost of the framework boundary
+## Cost of the framework boundary (row 23)
 
-The two conversions sit inside the timed region. I measured them:
+`forward()` converts the input to MLX and the output back to torch. The
+timed region holds both conversions. `benchmark_once()` throws the returned
+tensor away, but it builds the tensor before the stopwatch stops.
 
-| Part | Time | Share |
+The share grows with the size of the activation:
+
+    .venv/bin/python3 profiling/zero_copy.py
+
+| Shape | total ms | to MLX (in) | `.all()` | MLX calculation | to torch (out) | torch share |
+|---|---:|---:|---:|---:|---:|---:|
+| 2 B1 D128 S128 | 0.781 | 0.044 | 0.001 | 0.767 | 0.002 | 5.9% |
+| 1 B64 D128 S128 | 10.060 | 0.099 | 0.001 | 9.643 | 0.155 | 2.5% |
+| 8 B64 D1024 S128 | 136.151 | 2.012 | 0.001 | 131.400 | 1.496 | 2.6% |
+| 6 B10000 D128 S128 | 1677.975 | 17.439 | 0.052 | 1494.072 | 59.246 | 4.6% |
+
+An earlier version of this section reported 0.8% at the default size only.
+That number is correct for that size. It hid the cost at shape 6, which
+carries 66.5% of the FLOP-weighted score.
+
+### The output copy was avoidable
+
+MLX allocates every array in unified memory, so the CPU reads an MLX buffer
+with no transfer. `np.asarray` returns a view of that buffer. `np.array`
+allocates and copies. `_to_torch()` called `np.array`.
+
+Copy rates at 64 MiB, from the same script:
+
+| Direction | Result | Rate |
 |---|---|---|
-| Full `forward()` | 13.422 ms | 100% |
-| MLX calculation | 13.256 ms | 98.8% |
-| torch to MLX (input) | 0.027 ms | 0.2% |
-| MLX to torch (output) | 0.078 ms | 0.6% |
+| `mx.array(numpy)` | copy | 24 to 51 GB/s |
+| `np.array(mlx)` | copy | 15 to 22 GB/s |
+| `np.asarray(mlx)` | **view** | 0.0008 ms at 625 MiB |
 
-The boundary costs 0.8%. It is small at this size. It becomes important for
-a much smaller model.
+The input copy stays. MLX allocates from its own pool, so `mx.array` must
+own the bytes. The output copy is now a view.
+
+Measured at shape 6, 12 interleaved samples for each arm, same process and
+same model instance:
+
+| `_to_torch` | median | min |
+|---|---:|---:|
+| `np.array` (copy) | 1590.2 ms | 1554.4 ms |
+| `np.asarray` (view) | 1518.6 ms | 1500.5 ms |
+
+Gain: 71.6 ms on the median, 1.047x. Interleave the samples. A plain
+before/after at shape 6 gave the wrong sign, because the shape drifts by
+about 200 ms between runs.
+
+### The view is honest and it is safe
+
+`mx.eval(output)` in `forward()` already finishes the GPU work. After it,
+`np.asarray` costs 0.02 ms and a read of the first element costs 0.02 ms.
+So the removed copy was overhead, not a disguised wait. `mx.eval` blocks:
+a 15-step matmul chain took 510.27 ms with `mx.eval` alone and 509.39 ms
+with `mx.eval` plus `mx.synchronize()`.
+
+Checks that passed:
+
+- `torch.equal` against the copying version at shapes 1, 8 and 6. Bit exact.
+- The harness at its defaults: PASS, `max_abs=2.98023e-06`, 5.486x.
+- Lifetime. The chain tensor -> ndarray -> memoryview -> `mx.array` holds a
+  reference. The values survived 50 rounds of MLX allocator churn after the
+  source array went out of scope.
+- float32 and float16 alias the MLX buffer. bfloat16 casts first, and a
+  dtype or device change in `.to()` copies, so both give an independent
+  tensor.
+
+One condition: the returned tensor shares memory with the MLX array. A
+write to the tensor changes the array. `compare_outputs()` only reads it.
 
 ## Backend comparison: how much is the GPU, how much is MLX
 
@@ -630,3 +694,97 @@ B x H x S x S score matrix, which is 18.6 TiB at that shape.
 
 - ~~**A torch MPS baseline.**~~ Done. See the backend comparison above.
 - ~~**One matmul for q, k and v.**~~ Done. Attempt 9.
+
+## 25. Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim`
+
+`mx.fast.scaled_dot_product_attention` reaches the fused flash kernel for
+five head widths only: 64, 72, 80, 96 and 128 (row 20). Every other width
+takes a fallback that materializes the whole `B x H x S x S` score matrix.
+Ten of the fourteen appendix shapes have `head_dim` 8 or 32, so ten shapes
+were on the fallback.
+
+MLX gives no way to name a kernel and run it. `mx.fast` holds only
+`scaled_dot_product_attention`, which applies the width check first, and
+`metal_kernel`, which compiles source you supply. But the wheel ships the
+Metal SOURCE of the fused kernel:
+
+    .venv/lib/python3.13/site-packages/mlx/include/mlx/backend/metal/
+      kernels/steel/attn/
+
+The kernel is a C++ template. `BD` is the head width and the template only
+needs `BD % 8 == 0`, because its MMA fragment is 8 wide. Apple compiled five
+values. Nothing stops us from compiling another one.
+
+`steel_attention.py` inlines the nine-header dependency chain and makes
+three edits, listed in that file. The arithmetic is untouched.
+
+**It is the real flash kernel.** Peak GPU memory at B=8, H=8, S=1024,
+`head_dim=32`, where the score matrix would be 256 MiB:
+
+| path | extra peak |
+|---|---:|
+| `mx.fast.scaled_dot_product_attention` | 273.0 MiB |
+| hoisted steel `bd32` | **8.0 MiB** |
+
+Attention step alone, causal float32, against the path each shape used
+before:
+
+| case | path before | before | after | gain |
+|---|---|---:|---:|---:|
+| shape 6 chunk, B1024 H4 S128 D32 | fallback blk64 | 13.838 | 2.261 | **6.12x** |
+| shape 11, B64 H16 S128 D8 | fallback blk32 | 2.921 | 0.358 | **8.16x** |
+| shape 1, B64 H4 S128 D32 | fallback blk64 | 1.070 | 0.323 | 3.31x |
+| shape 13, B64 H4 S1024 D32 | pad64 fused | 11.061 | 5.166 | 2.14x |
+| shape 7, B64 H4 S128 D8 | fallback blk32 | 0.834 | 0.318 | 2.62x |
+
+Full sweep, MLX milliseconds. Reproduce with
+`.venv/bin/python3 scoreboard.py --label "..."`:
+
+| # | steel | before | after | gain | FLOP share |
+|---:|:---:|---:|---:|---:|---:|
+| 6 | yes | 1772.615 | 1346.945 | **1.32x** | 66.5% |
+| 8 | no | 135.822 | 135.210 | 1.00x | 21.3% |
+| 13 | yes | 111.195 | 75.789 | **1.47x** | 9.4% |
+| 5 | yes | 20.236 | 17.548 | 1.15x | 0.9% |
+| 11 | yes | 17.074 | 7.800 | **2.19x** | 0.4% |
+| 1 | yes | 9.966 | 8.004 | 1.25x | 0.4% |
+| 9 | no | 7.051 | 6.855 | 1.03x | 0.4% |
+| 10 | no | 6.935 | 6.824 | 1.02x | 0.4% |
+| 7 | yes | 6.945 | 4.701 | **1.48x** | 0.0% |
+| 4 | yes | 2.507 | 2.227 | 1.13x | 0.1% |
+| 12 | yes | 2.407 | 2.142 | 1.12x | 0.1% |
+| 3 | yes | 1.128 | 1.106 | 1.02x | 0.0% |
+| 2 | yes | 0.775 | 0.644 | 1.20x | 0.0% |
+
+**FLOP-weighted: 1218.8 ms to 932.2 ms, which is 1.308x.**
+
+Accuracy PASS on every shape, `max_abs` 1.31e-06 to 1.91e-06.
+
+**Read the MPS column, not the CPU column.** The CPU baseline of that sweep
+ran on a loaded machine: shape 6 went 18943 ms to 24763 ms between sweeps on
+a baseline this project forbids changing. So the CPU speedup moved from
+10.57x to 17.97x FLOP-weighted, and most of that is the reference, not the
+kernel. MPS held steady (shape 8 165.4 to 165.8, shape 11 41.9 to 42.0), and
+against MPS the gain is **1.60x to 2.12x FLOP-weighted**.
+
+Limits:
+
+1. The kernel takes a string causal mask only. A padded batch keeps the old
+   path. This is a correctness gate.
+2. `head_dim` must be a multiple of 8.
+3. Q plus K threadgroup memory must fit 32 KiB, which caps `head_dim` at 96
+   with `BQ=32, BK=32`. See row 26.
+
+## 26. Reach the steel kernel at `head_dim = 256` for shape 8
+
+Shape 8 is `d_model=1024`, `num_heads=4`, so `head_dim=256`, and it carries
+21.3% of the FLOP weight. It is the largest shape row 25 cannot take.
+
+`BQ=32, BK=32, BD=256` needs 68.5 KiB of threadgroup memory against a 32 KiB
+limit. `BK=16` needs about 41 KiB, still over. `BK=8` would fit and is not
+tried.
+
+**The ceiling is small.** Shape 8 is 7.6% attention by measured time, not the
+4% the FLOP table implies, because `d_model=1024` makes the projections 92%
+of the work. A perfect attention kernel would give about 1.5% of the
+weighted score.
