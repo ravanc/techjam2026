@@ -6,3 +6,6 @@ __pycache__/
 # Instruments / Metal captures - hundreds of MB each
 profiling/traces/
 profiling/*.dylib
+
+# scoreboard CPU cache - machine-local measurements
+profiling/cpu_cache.json

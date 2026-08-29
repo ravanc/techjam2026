@@ -28,6 +28,12 @@ ten minutes. The CPU baseline is most of that time: at shape 6 one CPU call
 takes 13.6 s, because `BaselineSelfAttention` materializes a 2.4 GiB score
 matrix. `--repeats` overrides the automatic count.
 
+`--cpu-cache` reuses a stored CPU reading instead of measuring it again.
+`BaselineTransformer` never changes, so the reading only moves with the
+machine. Each entry serves five sweeps, then the sixth sweep measures it
+again. A cached reading is marked in every output. Read the warning above
+`CPU_CACHE_USES` before you use it.
+
 Outputs:
     profiling/scoreboard.json   the newest sweep, overwritten each run
     profiling/history.jsonl     append-only, one line per sweep
@@ -41,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 import os
 import statistics
@@ -75,6 +82,97 @@ CPU_FLOPS_ESTIMATE = 200e9
 # Target seconds of timed work per backend per round.
 TARGET_SECONDS = 2.0
 
+# WARNING. A cached CPU reading comes from an earlier sweep. That sweep ran
+# under a different machine load, at a different chip temperature. The
+# `vs CPU` column then compares two readings that no single sweep produced.
+# Use the cache while you tune. Measure the CPU again before you record a
+# number that you report. `--cpu-cache` is off by default for this reason.
+#
+# How many sweeps one cached CPU reading serves. The sixth sweep measures the
+# shape again and sets the count back to zero.
+CPU_CACHE_USES = 5
+
+# The cache file format. A different number makes the reader drop the file.
+CPU_CACHE_VERSION = 1
+
+
+def cpu_cache_key(config: Dict, args: argparse.Namespace, repeats: int) -> str:
+    """Every input that moves the CPU reading goes into the key."""
+    material = {
+        "config": config,
+        "dtype": args.dtype,
+        "seed": args.seed,
+        "padding_ratio": args.padding_ratio,
+        "warmup": args.warmup,
+        "repeats": repeats,
+        "rounds": args.rounds,
+        "torch": torch.__version__,
+    }
+    text = json.dumps(material, sort_keys=True, default=str)
+    return hashlib.sha1(text.encode()).hexdigest()[:16]
+
+
+def load_cpu_cache(path: str) -> Dict:
+    """Read the cache file. Return an empty cache when it is absent or stale."""
+    empty = {"version": CPU_CACHE_VERSION, "entries": {}}
+    if not os.path.exists(path):
+        return empty
+    try:
+        with open(path) as handle:
+            cache = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        print(f"[warning] {path} is unreadable; starting a new CPU cache")
+        return empty
+    if cache.get("version") != CPU_CACHE_VERSION:
+        print(f"[warning] {path} holds version {cache.get('version')}; "
+              f"starting a new CPU cache")
+        return empty
+    cache.setdefault("entries", {})
+    return cache
+
+
+def save_cpu_cache(cache: Dict, path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as handle:
+        json.dump(cache, handle, indent=2)
+
+
+def take_cpu_cache(cache: Dict, key: str) -> Optional[Dict]:
+    """
+    Serve one CPU reading from the cache, and count the use.
+
+    Return the entry when it still has a use left. Return `None` when the
+    entry reached `CPU_CACHE_USES`, which means the caller measures the shape
+    again. The counter belongs to the entry, so one shape does not expire
+    another shape.
+    """
+    entry = cache.get("entries", {}).get(key)
+    if entry is None:
+        return None
+    if entry.get("uses", 0) >= CPU_CACHE_USES:
+        return None
+    entry["uses"] = entry.get("uses", 0) + 1
+    return entry
+
+
+def store_cpu_cache(cache: Dict, key: str, case_id: int, median_ms: float,
+                    samples: List[float], repeats: int, rounds: int,
+                    dtype_name: str) -> Dict:
+    """Put a fresh CPU reading in the cache. The use count starts at zero."""
+    entry = {
+        "case_id": case_id,
+        "median_ms": median_ms,
+        "samples": samples,
+        "repeats": repeats,
+        "rounds": rounds,
+        "dtype": dtype_name,
+        "measured_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "git": git_state(),
+        "uses": 0,
+    }
+    cache.setdefault("entries", {})[key] = entry
+    return entry
+
 
 @dataclass
 class CaseResult:
@@ -88,6 +186,7 @@ class CaseResult:
     samples: Dict[str, List[float]] = field(default_factory=dict)
     accuracy: Dict[str, Dict] = field(default_factory=dict)
     failed: Dict[str, str] = field(default_factory=dict)
+    cached: Dict[str, Dict] = field(default_factory=dict)
     plan: Optional[str] = None
     repeats: int = 0
     rounds: int = 0
@@ -142,7 +241,8 @@ def accuracy_of(reference: torch.Tensor, other: torch.Tensor,
     }
 
 
-def run_case(shape: Shape, args: argparse.Namespace, names: List[str]) -> CaseResult:
+def run_case(shape: Shape, args: argparse.Namespace, names: List[str],
+             cache: Optional[Dict] = None) -> CaseResult:
     config = shape.config()
     config.validate()
     dtype = resolve_dtype(args.dtype)
@@ -192,11 +292,32 @@ def run_case(shape: Shape, args: argparse.Namespace, names: List[str]) -> CaseRe
         del case, reference
         free_memory()
 
+    # --- the CPU reading, from the cache when it still has a use left ---
+    cache_key: Optional[str] = None
+    served: Optional[Dict] = None
+    if cache is not None and "cpu" in names and "cpu" not in result.failed:
+        cache_key = cpu_cache_key(result.config, args, result.repeats)
+        served = take_cpu_cache(cache, cache_key)
+        if served is not None:
+            result.samples["cpu"] = list(served["samples"])
+            result.cached["cpu"] = {
+                "measured_at": served["measured_at"],
+                "uses": served["uses"],
+                "limit": CPU_CACHE_USES,
+                "git": served.get("git", {}),
+            }
+            print(f"    cpu  cached reading, use {served['uses']} of "
+                  f"{CPU_CACHE_USES}, measured {served['measured_at']}")
+        elif cache_key in cache.get("entries", {}):
+            print(f"    cpu  cache reached {CPU_CACHE_USES} uses; "
+                  f"measuring the CPU again")
+
     # --- timing, one backend at a time so a failure is contained ---
+    timed = [b for b in backends if not (b.name == "cpu" and served is not None)]
     timing_case = make_timing_case(config, args.seed, args.padding_ratio)
     for round_index in range(args.rounds):
         # Reverse on odd rounds so no backend always runs on a cold chip.
-        order = backends if round_index % 2 == 0 else list(reversed(backends))
+        order = timed if round_index % 2 == 0 else list(reversed(timed))
         for backend in order:
             if backend.name in result.failed:
                 continue
@@ -213,7 +334,14 @@ def run_case(shape: Shape, args: argparse.Namespace, names: List[str]) -> CaseRe
     for name, samples in result.samples.items():
         result.median_ms[name] = statistics.median(samples)
 
-    del backends, timing_case
+    if (cache is not None and cache_key is not None and served is None
+            and "cpu" in result.median_ms):
+        store_cpu_cache(
+            cache, cache_key, result.case_id, result.median_ms["cpu"],
+            result.samples["cpu"], result.repeats, args.rounds, args.dtype,
+        )
+
+    del backends, timed, timing_case
     free_memory()
     return result
 
@@ -232,6 +360,10 @@ def print_case(result: CaseResult) -> None:
         accuracy = result.accuracy.get(name)
         if name == "cpu":
             note = "reference"
+            mark = result.cached.get("cpu")
+            if mark:
+                note += (f" | CACHED use {mark['uses']} of {mark['limit']}, "
+                         f"measured {mark['measured_at']}")
         elif accuracy is None:
             note = "not checked"
         else:
@@ -296,6 +428,9 @@ def append_history(results: List[CaseResult], payload: Dict,
         "dtype": payload["dtype"],
         "elapsed_seconds": payload["elapsed_seconds"],
         "summary": summarize(results),
+        "cpu_cached_cases": sorted(
+            r.case_id for r in results if r.cached.get("cpu")
+        ),
         "cases": {
             str(r.case_id): {
                 "median_ms": r.median_ms,
@@ -303,6 +438,7 @@ def append_history(results: List[CaseResult], payload: Dict,
                 "tflops_mlx": r.tflops("mlx"),
                 "plan": r.plan,
                 "flops": r.flops,
+                "cpu_cached": bool(r.cached.get("cpu")),
             }
             for r in results
         },
@@ -383,6 +519,12 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
     add("- Each call is bracketed by a device synchronize. Rounds alternate the")
     add("  backend order, so no backend always runs on a cold chip.")
     add(f"- sweep took {elapsed / 60:.1f} minutes")
+    if any(r.cached.get("cpu") for r in results):
+        add("- **† marks a CPU reading that came from the cache, not from this")
+        add("  sweep.** The earlier sweep ran under a different machine load, at")
+        add("  a different chip temperature. The speedup beside a marked reading")
+        add("  mixes two sweeps. Run without `--cpu-cache` before you report a")
+        add("  number.")
     add("")
     add("MFU appears once, in its own section, and it is provisional. See")
     add("[../flops.py](../flops.py).")
@@ -400,7 +542,10 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
         def cell(name: str) -> str:
             if name in result.failed:
                 return "OOM"
-            return number(result.median_ms.get(name))
+            text = number(result.median_ms.get(name))
+            if name in result.cached:
+                text += " †"
+            return text
 
         mps_up = result.speedup("mps")
         mlx_up = result.speedup("mlx")
@@ -557,6 +702,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rtol", type=float, default=0.02)
     parser.add_argument("--atol", type=float, default=0.002)
     parser.add_argument("--skip-accuracy", action="store_true")
+    parser.add_argument(
+        "--cpu-cache", action="store_true",
+        help=f"reuse a stored CPU reading for up to {CPU_CACHE_USES} sweeps, "
+             f"then measure it again. Off by default: a cached reading carries "
+             f"the machine state of an earlier sweep",
+    )
+    parser.add_argument("--cpu-cache-path", default="profiling/cpu_cache.json")
+    parser.add_argument(
+        "--clear-cpu-cache", action="store_true",
+        help="delete the CPU cache file and stop",
+    )
     parser.add_argument("--json", default="profiling/scoreboard.json")
     parser.add_argument("--markdown", default="references/scoreboard.md")
     parser.add_argument("--history", default="profiling/history.jsonl")
@@ -572,6 +728,13 @@ def main() -> int:
     if args.show_history:
         print_history(load_history(args.history))
         return 0
+    if args.clear_cpu_cache:
+        if os.path.exists(args.cpu_cache_path):
+            os.remove(args.cpu_cache_path)
+            print(f"removed {args.cpu_cache_path}")
+        else:
+            print(f"{args.cpu_cache_path} does not exist")
+        return 0
 
     names = [name.strip() for name in args.backends.split(",") if name.strip()]
     if "cpu" not in names:
@@ -583,6 +746,15 @@ def main() -> int:
     print("measured matmul rates on this machine (TFLOP/s): " + ", ".join(
         f"{name}={rate}" for name, rate in MEASURED_TFLOPS.items()
     ))
+
+    cpu_cache: Optional[Dict] = None
+    if args.cpu_cache:
+        cpu_cache = load_cpu_cache(args.cpu_cache_path)
+        print(f"CPU cache on: {args.cpu_cache_path}, "
+              f"{len(cpu_cache['entries'])} entries, "
+              f"{CPU_CACHE_USES} uses each")
+        print("[warning] a cached CPU reading comes from an earlier sweep. "
+              "Measure the CPU again before you report a speedup.")
 
     selected = parse_selection(args.cases)
     results: List[CaseResult] = []
@@ -603,9 +775,12 @@ def main() -> int:
             print(f"    skipped: input {input_gib:.2f} GiB is over the "
                   f"{args.budget_gb} GiB budget")
             continue
-        result = run_case(shape, args, names)
+        result = run_case(shape, args, names, cpu_cache)
         print_case(result)
         results.append(result)
+        if cpu_cache is not None:
+            # Write after each case, so an interrupted sweep keeps its readings.
+            save_cpu_cache(cpu_cache, args.cpu_cache_path)
 
     elapsed = time.perf_counter() - started
     payload = {
@@ -614,6 +789,9 @@ def main() -> int:
         "torch_version": torch.__version__,
         "elapsed_seconds": elapsed,
         "summary": summarize(results),
+        "cpu_cached_cases": sorted(
+            r.case_id for r in results if r.cached.get("cpu")
+        ),
         "cases": [
             {
                 "case_id": r.case_id,
@@ -628,6 +806,7 @@ def main() -> int:
                 "tflops": {name: r.tflops(name) for name in r.median_ms},
                 "accuracy": r.accuracy,
                 "failed": r.failed,
+                "cached": r.cached,
             }
             for r in results
         ],
@@ -655,6 +834,12 @@ def main() -> int:
               f"to {summary['max_speedup_mlx']:.2f}x")
         print(f"  median MLX rate             : {summary['median_tflops_mlx']:.3f} TFLOP/s")
     print(f"  sweep took {elapsed / 60:.1f} minutes")
+    cached_ids = sorted(r.case_id for r in results if r.cached.get("cpu"))
+    if cached_ids:
+        print(f"  CPU came from the cache for shapes: "
+              f"{', '.join(str(i) for i in cached_ids)}")
+        print("  Those speedups mix two sweeps. Measure the CPU again before "
+              "you report them.")
     return 0
 
 

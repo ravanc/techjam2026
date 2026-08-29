@@ -101,6 +101,28 @@ Rules:
 5. Give the command that produced a number, next to the number.
 6. Record a failure as well as a success. A recorded failure stops repeated
    work.
+7. `scoreboard.py --cpu-cache` reuses a stored CPU reading. The flag is off
+   by default. Use it while you tune, because the CPU baseline takes most of
+   the sweep time. Do not use it for a number that you report. A cached
+   reading comes from an earlier sweep. That sweep ran under a different
+   machine load, at a different chip temperature. The speedup beside a cached
+   reading mixes two sweeps.
+
+## The CPU cache
+
+`BaselineTransformer` never changes, so its time only moves with the machine.
+`--cpu-cache` stores one entry for each shape in `profiling/cpu_cache.json`.
+The file is machine-local, and git ignores it.
+
+- Each entry counts its uses. It serves five sweeps. The sixth sweep measures
+  the CPU again, writes the new reading, and sets the count back to zero.
+- Each entry holds its own count. One shape does not expire another shape.
+- The key holds the shape config, the dtype, the seed, the padding ratio, the
+  warmup count, the repeat count, the round count and the torch version. A
+  change to any one of these makes a new entry.
+- Every output marks a cached reading: the console line, `scoreboard.json`,
+  `history.jsonl`, and a `†` in `references/scoreboard.md`.
+- Run `scoreboard.py --clear-cpu-cache` to delete the file.
 
 # What a test run must report
 
