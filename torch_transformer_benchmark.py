@@ -193,6 +193,159 @@ def _to_torch(
     return torch.from_numpy(np.array(array)).to(device=device, dtype=dtype)
 
 
+def _dtype_size(dtype: mx.Dtype) -> int:
+    """Bytes of one element. float32 gives 4, float16 and bfloat16 give 2."""
+    return 2 if dtype in (mx.float16, mx.bfloat16) else 4
+
+
+@dataclass(frozen=True)
+class KernelPlan:
+    """
+    Which MLX kernel path to use. Chosen from the shape, once per model.
+
+    The Appendix 3.7 shapes span 7 orders of magnitude of work, from 0.13
+    GFLOP (shape 2) to 2.7 PFLOP (shape 14). One kernel path is not correct
+    across that range. Every threshold below comes from a measurement on
+    this machine. See references/mlx-tensorops.md.
+    """
+
+    fuse_qkv: bool
+    causal_block: Optional[int]
+    batch_chunk: Optional[int]
+
+    def describe(self) -> str:
+        block = self.causal_block if self.causal_block else "full"
+        chunk = self.batch_chunk if self.batch_chunk else "none"
+        return f"fuse_qkv={self.fuse_qkv} causal_block={block} batch_chunk={chunk}"
+
+
+# One activation of this size per batch chunk. 64 MiB keeps the live set of a
+# chunk inside the GPU cache hierarchy and away from the 12 GiB working set
+# limit of the M3 Pro. Measured at shape 6 (B=10000, S=128, D=128), one layer:
+#   chunk=10000  284.1 ms  8.55 GiB peak
+#   chunk= 4096  286.1 ms  6.71 GiB peak
+#   chunk= 1024  271.9 ms  5.60 GiB peak   <- 64 MiB rule picks this
+#   chunk=  256  271.4 ms  3.86 GiB peak
+# Chunking is not slower. It is free insurance against the working set limit.
+CHUNK_ACTIVATION_BYTES = 64 * 1024 * 1024
+
+# Blocked causal attention needs enough independent (batch x head) work to pay
+# for its extra kernel launches, and enough sequence to have a masked triangle
+# worth skipping.
+MIN_BLOCK_PARALLEL = 64
+MIN_BLOCK_SEQ = 64
+
+
+def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
+    """
+    Pick the kernel path for one shape.
+
+    **Blocked causal attention.** `mx.fast.scaled_dot_product_attention` does
+    not skip the masked triangle. In MLX 0.32.2 `mask="causal"` is *slower*
+    than no mask at all. At B=64, H=4, S=1024, head_dim=32:
+
+        mask=None      38.5 ms
+        mask="causal"  52.7 ms
+        array mask     55.1 ms
+
+    Splitting the query into blocks and giving each block only the keys it
+    can see does skip the triangle. It is bit exact: `max_abs_diff = 0.0`
+    against the full call. Block size sweep, best of each row:
+
+        B    H     S   hd | full   blk32   blk64 | best
+        64   4   128   32 | 1.001  0.917   0.895 | blk64  1.12x
+        64   4  1024   32 | 52.00  36.32  31.90  | blk64  1.63x
+        64  16   128    8 | 3.408  2.649   2.709 | blk32  1.29x
+        64   4   128    8 | 0.855  0.687   0.693 | blk32  1.24x
+        64   2   128   64 | 0.194  0.310   0.281 | full   (blocking loses)
+        64   1   128  128 | 0.208  0.318   0.303 | full   (blocking loses)
+        64   4   128  256 | 2.549  3.726   3.154 | full   (blocking loses)
+        1    4   128   32 | 0.050  0.129   0.074 | full   (blocking loses)
+        4    4   128   32 | 0.088  0.134   0.093 | full   (blocking loses)
+        16   4   128   32 | 0.267  0.257   0.247 | blk64  1.08x
+
+    Three conditions decide it, and the three rules below match all ten rows:
+
+    1. A wide head is already efficient, so blocking only adds launches. The
+       fused kernel reaches 1390 GFLOP/s at head_dim=128 but only 270 at
+       head_dim=32 and 78 at head_dim=8.
+    2. A short sequence has no triangle worth skipping.
+    3. A small batch cannot fill the GPU, so launch cost dominates.
+
+    **Fused QKV.** One [D, 3D] matmul in place of three [D, D] matmuls. It
+    removes two kernel launches per layer. This matters only where the
+    launch is a large share of the call, which is the small-batch shapes:
+
+        B=1,  S=128, D=128 | 0.0439 -> 0.0220 ms  1.99x
+        B=64, S=128, D=128 | 0.6202 -> 0.5524 ms  1.12x
+        B=64, S=128, D=1024| 14.30  -> 14.27  ms  1.00x
+
+    It never loses outside measurement noise, so it is always on.
+
+    **Batch chunking.** See `CHUNK_ACTIVATION_BYTES`.
+    """
+    head_dim = config.d_model // config.num_heads
+    parallel = config.batch_size * config.num_heads
+
+    causal_block: Optional[int] = None
+    if (
+        config.causal
+        and head_dim < 64
+        and config.seq_len > MIN_BLOCK_SEQ
+        and parallel >= MIN_BLOCK_PARALLEL
+    ):
+        causal_block = 32 if head_dim <= 16 else 64
+
+    per_sample = config.seq_len * config.d_model * itemsize
+    chunk = max(1, CHUNK_ACTIVATION_BYTES // max(1, per_sample))
+    batch_chunk = chunk if chunk < config.batch_size else None
+
+    return KernelPlan(
+        fuse_qkv=True, causal_block=causal_block, batch_chunk=batch_chunk
+    )
+
+
+def _attention(
+    q: mx.array,
+    k: mx.array,
+    v: mx.array,
+    scale: float,
+    mask,
+    block: Optional[int],
+) -> mx.array:
+    """
+    Causal attention, with or without query blocking.
+
+    Without a block size this is one fused call. With a block size the query
+    splits into blocks of `block` rows, and block `i` receives only the keys
+    up to its own last row. The masked triangle is then never calculated.
+
+    MLX aligns a `"causal"` mask to the *end* of the key sequence, so a query
+    block of length `stop - start` against keys `[0, stop)` gets exactly the
+    rows it needs. Verified bit exact against the unblocked call.
+    """
+    if block is None:
+        return mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
+
+    seq_len = q.shape[2]
+    parts = []
+    for start in range(0, seq_len, block):
+        stop = min(start + block, seq_len)
+        part_mask = mask if isinstance(mask, str) or mask is None else (
+            mask[..., start:stop, :stop]
+        )
+        parts.append(
+            mx.fast.scaled_dot_product_attention(
+                q[:, :, start:stop],
+                k[:, :, :stop],
+                v[:, :, :stop],
+                scale=scale,
+                mask=part_mask,
+            )
+        )
+    return mx.concatenate(parts, axis=2)
+
+
 def _mlx_transformer(
     x: mx.array,
     valid_mask: mx.array,
@@ -202,9 +355,11 @@ def _mlx_transformer(
     num_heads: int,
     causal: bool,
     compute_dtype: mx.Dtype,
+    padded: bool,
+    plan: KernelPlan,
 ) -> mx.array:
     """
-    The baseline forward pass, written with MLX operations.
+    The baseline forward pass, written with MLX operations. One batch chunk.
 
     The LayerNorm runs in float32 and then returns to the model type. The
     torch baseline accumulates its LayerNorm in float32 for every input
@@ -214,6 +369,11 @@ def _mlx_transformer(
     in float32, to copy line 111 of the baseline. It gave no gain: float16
     went from 49 to 50 failures, and bfloat16 from 172424 to 173161. The
     fused kernel is simpler, so I kept it.
+
+    The `padded` flag selects the mask form. An array mask is necessary only
+    when the batch has padding.
+
+    `plan` selects the kernel path for this shape. See `plan_kernels()`.
     """
     half = compute_dtype != mx.float32
 
@@ -227,12 +387,15 @@ def _mlx_transformer(
     head_dim = d_model // num_heads
     scale = head_dim**-0.5
 
-    # A boolean attention mask. True keeps the key position.
-    keep = valid_mask[:, None, None, :]
-    if causal:
-        index = mx.arange(seq_len)
-        keep = mx.logical_and(keep, (index[:, None] >= index[None, :]))
-    keep = mx.broadcast_to(keep, (batch, 1, seq_len, seq_len))
+    # The mask form. True keeps the key position.
+    if padded:
+        keep = valid_mask[:, None, None, :]
+        if causal:
+            index = mx.arange(seq_len)
+            keep = mx.logical_and(keep, (index[:, None] >= index[None, :]))
+        mask = mx.broadcast_to(keep, (batch, 1, seq_len, seq_len))
+    else:
+        mask = "causal" if causal else None
 
     valid_tokens = valid_mask[..., None]
 
@@ -243,14 +406,17 @@ def _mlx_transformer(
 
     for layer in layers:
         h = norm(x, layer["n1w"], layer["n1b"])
-        q = heads(h @ layer["qw"].T + layer["qb"])
-        k = heads(h @ layer["kw"].T + layer["kb"])
-        v = heads(h @ layer["vw"].T + layer["vb"])
+
+        if plan.fuse_qkv:
+            fused = h @ layer["qkvw"] + layer["qkvb"]
+            q, k, v = (heads(part) for part in mx.split(fused, 3, axis=-1))
+        else:
+            q = heads(h @ layer["qw"].T + layer["qb"])
+            k = heads(h @ layer["kw"].T + layer["kb"])
+            v = heads(h @ layer["vw"].T + layer["vb"])
 
         # An explicit float32 softmax gave no accuracy gain here. Measured.
-        context = mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=scale, mask=keep
-        )
+        context = _attention(q, k, v, scale, mask, plan.causal_block)
         context = context.transpose(0, 2, 1, 3).reshape(batch, seq_len, d_model)
         attention = context @ layer["ow"].T + layer["ob"]
         x = x + mx.where(valid_tokens, attention, 0)
@@ -294,11 +460,16 @@ class UserOptimizedTransformer(BaselineTransformer):
 
     use_mlx_compile: bool = True
 
+    # Set this to a `KernelPlan` to override `plan_kernels()`. It is for
+    # tuning: it lets a benchmark compare two paths on one shape.
+    plan_override: Optional["KernelPlan"] = None
+
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__(config)
         self._mlx_layers: Optional[List[Dict[str, mx.array]]] = None
         self._mlx_final: Optional[Tuple[mx.array, mx.array]] = None
         self._mlx_call = None
+        self.plan: Optional[KernelPlan] = None
 
     def _build_mlx_weights(self) -> None:
         """
@@ -341,13 +512,35 @@ class UserOptimizedTransformer(BaselineTransformer):
         causal = self.config.causal
         compute_dtype = _to_mlx(params["final_norm.weight"]).dtype
 
-        def call(x, valid_mask, layers, final_weight, final_bias):
-            return _mlx_transformer(
-                x, valid_mask, layers, final_weight, final_bias,
-                num_heads, causal, compute_dtype,
+        # The plan needs the run dtype, which is known only now. Set
+        # `plan_override` before the first call to test another path.
+        self.plan = self.plan_override or plan_kernels(
+            self.config, _dtype_size(compute_dtype)
+        )
+
+        # One [D, 3D] weight in place of three [D, D] weights. The order is
+        # q, k, v, so `mx.split(..., 3)` returns them in that order.
+        for layer in self._mlx_layers:
+            layer["qkvw"] = mx.concatenate(
+                [layer["qw"], layer["kw"], layer["vw"]], axis=0
+            ).T
+            layer["qkvb"] = mx.concatenate(
+                [layer["qb"], layer["kb"], layer["vb"]], axis=0
             )
 
-        self._mlx_call = mx.compile(call) if self.use_mlx_compile else call
+        # One variant for each mask form. `padded` changes the graph, so it
+        # cannot be a traced argument. Two variants compile at most.
+        plan = self.plan
+
+        def make_call(padded: bool):
+            def call(x, valid_mask, layers, final_weight, final_bias):
+                return _mlx_transformer(
+                    x, valid_mask, layers, final_weight, final_bias,
+                    num_heads, causal, compute_dtype, padded, plan,
+                )
+            return mx.compile(call) if self.use_mlx_compile else call
+
+        self._mlx_call = {padded: make_call(padded) for padded in (False, True)}
 
         mx.eval([w for layer in self._mlx_layers for w in layer.values()])
         mx.eval(self._mlx_final)
@@ -369,9 +562,27 @@ class UserOptimizedTransformer(BaselineTransformer):
         mlx_x = _to_mlx(x)
         mlx_mask = _to_mlx(valid_token_mask)
 
-        output = self._mlx_call(
-            mlx_x, mlx_mask, self._mlx_layers, *self._mlx_final
-        )
+        padded = not bool(valid_token_mask.all())
+        call = self._mlx_call[padded]
+
+        chunk = self.plan.batch_chunk
+        if chunk is None:
+            output = call(mlx_x, mlx_mask, self._mlx_layers, *self._mlx_final)
+        else:
+            # A large batch does not fit the 12 GiB GPU working set in one
+            # piece. Run the whole depth for one chunk, then the next. Only
+            # one chunk of intermediates is live at a time.
+            batch = mlx_x.shape[0]
+            parts = []
+            for start in range(0, batch, chunk):
+                stop = min(start + chunk, batch)
+                part = call(
+                    mlx_x[start:stop], mlx_mask[start:stop],
+                    self._mlx_layers, *self._mlx_final,
+                )
+                mx.eval(part)
+                parts.append(part)
+            output = mx.concatenate(parts, axis=0)
         mx.eval(output)
 
         return _to_torch(output, dtype=x.dtype, device=x.device)
