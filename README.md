@@ -75,7 +75,7 @@ Shape 6 is **67% IO-bound**. Four open items remain:
 | # | Bottleneck | Size | Why it is still open |
 |---:|---|---|---|
 | 32 | The attention kernel reads q, k and v with a stride | shape 6 sdpa is 5.58 ms strided against 2.24 ms contiguous, **2.50x** | A `mx.contiguous` first does not pay: the copy costs 3.43 ms and saves 3.34 ms. The win needs the QKV projection to write the head layout directly, or a kernel that reads the stride well |
-| 33 | GELU runs as a separate memory pass | 0.97 ms for each layer and chunk, **4.5%** of shape 6 | The GELU kernel is efficient at 115 GB/s. The extra pass is the cost. `mx.compile` does not fuse it, and MLX exposes no matmul epilogue |
+| 33 | GELU runs as a separate memory pass | 0.97 ms for each layer and chunk, **4.5%** of shape 6 | The GELU kernel is efficient at 115 GB/s. The extra pass is the cost. `mx.compile` does not fuse it. The steel GEMM header exposes an `apply_epilogue` hook, so the row 25 hoisting method can probably reach it |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
 | — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Not worth the effort |
 

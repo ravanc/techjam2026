@@ -51,7 +51,7 @@ Status:
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
 | 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L563, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 32 | Give the attention kernel contiguous q, k and v | **OPEN** | — | every shape on the steel path | not tried at the model level. An MLX transpose is a free strided view, so the head layout costs nothing as a stage and costs inside the attention kernel instead. Shape 6: SDPA is 5.54 ms on the strided view and **2.13 ms on contiguous copies, 2.60x**. A `mx.contiguous` first does not pay (3.29 ms of copy makes the total 5.42 ms, only 1.02x). The win needs the QKV projection to write the head layout directly, or a kernel that reads the stride well |
-| 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. MLX exposes no matmul epilogue, so Python may not be able to reach it |
+| 33 | Fold GELU into the FFN matmul epilogue | **OPEN** | — | every shape. `ffn_in` only | not tried. GELU runs as a separate kernel and costs a whole extra read plus write. At the shape 6 chunk (64 MiB activation): `mx.addmm` alone 1.417 ms, `addmm` then GELU 2.385 ms, so GELU adds **0.968 ms**. GELU alone is 1.166 ms at 115 GB/s, which is 90% of the copy roof, so the kernel itself is efficient. It is the extra pass that costs. `mx.compile` does NOT fuse it: 2.378 ms compiled against 2.385 ms plain. That is 4.5% of the shape 6 runtime. **The steel GEMM header exposes an epilogue hook**, so the row 25 hoisting trick can probably reach it. See the detail section |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -1303,8 +1303,44 @@ elementwise operation into a GEMM epilogue.
 At shape 6 this is 0.968 ms for each layer and each chunk, so 4 layers by 10
 chunks is 38.7 ms of the 852.8 ms runtime, or **4.5%**.
 
-**The row stays OPEN, and it may not be reachable.** MLX exposes no matmul
-epilogue through its Python API. `steel_attention.py` shows one way around a
-missing dispatch, by hoisting the Metal source of a kernel MLX already ships.
-The same trick would need a GEMM template with an epilogue hook. Nobody
-checked whether the MLX steel GEMM headers offer one.
+### The steel GEMM does expose an epilogue hook
+
+An earlier version of this section said MLX exposes no matmul epilogue, and
+that the path may not be reachable. **That was wrong.** I checked the headers.
+
+`steel/gemm/mma.h` line 595 holds this:
+
+    template <typename UnaryEpilogue>
+    METAL_FUNC void apply_epilogue(
+        thread const UnaryEpilogue& epilogue_op) thread {
+      for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
+        Ctile.elems()[i] = epilogue_op.apply(Ctile.elems()[i]);
+      }
+    }
+
+`Ctile` is the accumulator tile. It sits in registers, before the kernel
+writes it to memory. So the hook applies a caller's operation at exactly the
+point that removes the extra pass.
+
+`steel/gemm/transforms.h` holds the structs that already use the hook:
+`TransformNone`, `TransformAdd` and `TransformAxpby`. `TransformAdd` is how
+`mx.addmm` adds the bias inside the matmul, which row 29 already measured at
+1.096x. A `TransformGelu` takes the same form:
+
+    template <typename OutT, typename InT>
+    struct TransformGelu {
+      static METAL_FUNC OutT apply(InT x) { ... }
+    };
+
+So the arithmetic is a few lines, and it goes in a place the template already
+provides.
+
+**What is still unproven.** Row 25 hoisted `steel/attn/`, and the attention
+kernel is one template. The GEMM is larger: `steel_gemm_fused.h`,
+`steel_gemm_splitk.h` and `steel_gemm_masked.h` are separate kernels, and
+`plan_kernels()` would have to pick the right one for each shape. Nobody has
+compiled the steel GEMM through `mx.fast.metal_kernel` yet.
+
+**The row stays OPEN.** The prize is 4.5% of shape 6. The hook exists, and
+row 25 proves the hoisting method works on MLX's steel headers. The open
+question is the size of the GEMM, not whether the epilogue is reachable.
