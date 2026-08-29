@@ -44,18 +44,23 @@ Status:
 | 15 | Fused FFN | **KEPT**, as row 33 | `steel_gemm.py` | float32, `ffn_in`, rows >= 512 | `mx.compile` does NOT fuse the FFN: 2.237 ms compiled against 2.242 ms plain at the shape 6 chunk. Row 33 fuses it in the GEMM epilogue instead, for **1.064x FLOP-weighted** |
 | 16 | Quantization by `mx.quantize` | **OPEN** | — | every shape | not measured. It will fail the accuracy test |
 | 25 | Hoist MLX's `steel_attention` and compile it at an unshipped `head_dim` | **KEPT** | `steel_attention.py`, routed at `_attention()` L497, gated at `plan_kernels()` L430 | causal, no padded batch, `head_dim % 8 == 0`, `head_dim` not already fused, threadgroup fits. Shapes 1-7, 11, 12, 13 | **1.308x FLOP-weighted** (MLX 1218.8 ms to 932.2 ms). Shape 6 1.32x, shape 13 1.47x, shape 11 2.19x. MLX against MPS 1.60x to 2.12x FLOP-weighted. All accuracy PASS, max_abs 1.31e-06 to 1.91e-06 |
-| 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **OPEN** | — | shape 8, 21.3% of the FLOP weight | not measured. `bq32_bk32_bd256` needs 68.5 KiB of threadgroup memory against a 32 KiB limit, and `bk16` still needs 41 KiB. `bk8` would fit. Shape 8 is only 7.6% attention, so the ceiling is small |
+| 26 | Reach the steel kernel at `head_dim = 256` for shape 8 | **REVERTED** | — | — | measured. `bk8` does fit, and it LOSES. Three block shapes fit 32 KiB at `bd256`, and the best of them runs **0.904x** against the MLX fallback shape 8 uses today. See row 41 |
 | 27 | Gate the steel kernel on a string mask | **KEPT** (a bug fix) | `_mlx_transformer()` L604 | every padded batch on a shape that selects the steel kernel | a padded causal batch went **FAIL** (822894/1048576 elements wrong) to **PASS** (`max_abs=3.04e-06`). No sweep saw the bug: `--padding-ratio` defaults to 0.0 everywhere. `test_padding.py` now covers it |
 | 28 | Drop the token masks that cannot change the output | **KEPT** | `_mlx_transformer()` L599, L659, L665 | every shape. The unpadded graph now holds no mask operation | bit exact on 18 cases (`test_padding.py`). **1.048x FLOP-weighted** (MLX 841.6 ms to 803.2 ms). Shape 6 1.050x. MPS held at 1.010x and CPU at 1.005x on the same sweep, so the noise floor is about 1% |
 | 29 | `mx.addmm` for every projection, in place of `h @ w + b` | **KEPT** | `_mlx_transformer()` L621-L658 | every shape. Always on | **1.096x FLOP-weighted** (MLX 803.2 ms to 732.6 ms). Shape 6 1.099x, shape 8 1.040x, shape 13 1.092x. Bit exact in float32 on 16 cases |
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
 | 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L570, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 32 | Give the attention kernel contiguous q, k and v | **REVERTED** | — | — | 1.02x, inside the noise floor: the `mx.contiguous` costs 3.29 ms and saves 3.41 ms. **Row 34 supersedes it and inverts it.** The 3.41 ms was never the read pattern. It was a hidden copy that `ensure_row_contiguous=True` ran inside the kernel launch. Do not make q, k and v contiguous. Tell the kernel their strides. This row also mislabelled its own measurement: see the detail section |
-| 33 | Fold GELU into the FFN matmul epilogue | **KEPT** | `steel_gemm.py` `steel_addmm()` L376, tile at `choose_tile()` L288; gated at `plan_kernels()` L508; used at `_mlx_transformer()` L734 | float32, `ffn_in` only, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13. Shape 2 keeps the MLX pair | **1.064x FLOP-weighted** (MLX 768.6 ms to 722.3 ms over the 13 shapes). Shape 6 **1.082x**, shape 3 1.068x, shape 5 1.042x, shape 7 1.042x, shape 13 1.030x, shape 8 1.009x. At the `ffn_in` stage alone: shape 7 **4.49x**, shape 6 1.51x, shape 13 1.47x. Control: MPS held at 1.005x across the two sweeps. All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. 18/18 padding cases pass |
+| 33 | Fold GELU into the FFN matmul epilogue | **KEPT** | `steel_gemm.py` `steel_addmm()` L376, tile at `choose_tile()` L288; gated at `plan_kernels()` L508; used at `_mlx_transformer()` L734 | float32, `ffn_in` only, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13. Shape 2 keeps the MLX pair | **1.064x FLOP-weighted** (MLX 768.6 ms to 722.3 ms over the 13 shapes). Shape 6 **1.082x**, shape 3 1.068x, shape 5 1.042x, shape 7 1.042x, shape 13 1.030x, shape 8 1.009x. At the `ffn_in` stage alone: shape 7 **4.49x**, shape 6 1.51x, shape 13 1.47x. **Row 40 attributes that 1.51x: it is the epilogue, not the tile.** `steel_addmm(gelu=False)` ties `mx.addmm` on the same GEMM. Control: MPS held at 1.005x across the two sweeps. All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. 18/18 padding cases pass |
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
 | 37 | A wide `fast_layernorm` variant, so shape 8 reaches row 36 | **OPEN** | — | shape 8 only (`d_model` 1024), 21.3% of the FLOP weight | not tried. Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.53 ms of the 32.51 ms layer, or 4.7%**, so about **1.0% FLOP-weighted**. Measured directly after row 36: the two residual adds are 0.785 ms and 0.834 ms, and the C operand would cost 0.043 ms each. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
+| 38 | Retune the steel attention block shape (`bq`, `bk`, `wm`) against the MFA parameter table | **REVERTED** | — | — | the default `bq=32, bk=32, wm=4` is best on every steel shape. The best other config anywhere is **1.002x** (shape 13), inside the 1% noise floor. MFA's own `bq=16` gives 1.000x, 0.956x, 0.929x, 0.824x and 0.895x on the five cases |
+| 39 | Shift the edge block in the steel GEMM, so an unaligned tile stays branch free | **RULED OUT** | — | — | nothing to unlock. `choose_tile()` never returns `None` on any appendix shape: every M, N and K is a power of two, and at least two tiles divide all 13. Shape 2 loses the fused GELU to the `rows >= 512` gate, not to divisibility |
+| 40 | Route the projections with no epilogue through the hoisted steel GEMM | **REVERTED** | — | — | `mx.addmm` is already optimal. Over 8 tiles on 5 real projection sizes, the best steel tile reaches **1.005x**, and `max_abs` is **0.00e+00** everywhere, which proves MLX dispatches `addmm` to the same steel kernel with a good tile. Shape 6 `qkv proj` sits at 83.5% of matmul peak because K=128 is short, not because of the tile |
+| 41 | Reach the steel attention kernel at `head_dim = 256` with a narrow block | **REVERTED** | — | — | supersedes row 26. Three block shapes fit 32 KiB at `bd256`. Best is `bq16 bk8 wm2` at **0.904x** against the MLX fallback; `bq8 bk8` gives 0.553x and `bq8 bk16` gives 0.359x. Bit accurate (`max_abs` 1.19e-06), just slower |
+| 42 | Combine the batch chunks with something faster than `mx.concatenate` | **REVERTED** | — | — | `mx.concatenate` already runs at **119.9 GB/s** on the shape 6 output (625 MiB in 10.185 ms), against a 128 GB/s roof. Every alternative is about 7x worse, because a CPU-side copy of unified memory runs at 14-17 GB/s: `torch.cat` 72.3 ms, `torch.copy_` 77.0 ms, numpy slice assign 84.7 ms. All three are bit equal |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -788,19 +793,23 @@ Limits:
 3. Q plus K threadgroup memory must fit 32 KiB, which caps `head_dim` at 96
    with `BQ=32, BK=32`. See row 26.
 
-## 26. Reach the steel kernel at `head_dim = 256` for shape 8
+## 26. Reach the steel kernel at `head_dim = 256` for shape 8 — REVERTED
 
 Shape 8 is `d_model=1024`, `num_heads=4`, so `head_dim=256`, and it carries
 21.3% of the FLOP weight. It is the largest shape row 25 cannot take.
 
 `BQ=32, BK=32, BD=256` needs 68.5 KiB of threadgroup memory against a 32 KiB
-limit. `BK=16` needs about 41 KiB, still over. `BK=8` would fit and is not
-tried.
+limit. `BK=16` needs about 41 KiB, still over.
 
-**The ceiling is small.** Shape 8 is 7.6% attention by measured time, not the
+This row guessed that `BK=8` would fit, and never measured whether it would be
+faster. **Row 41 measured it. `BK=8` fits, and it loses: 0.904x against the
+MLX fallback.** Read row 41 before you try this again.
+
+**The ceiling is small.** Shape 8 is 7.1% attention by measured time, not the
 4% the FLOP table implies, because `d_model=1024` makes the projections 92%
-of the work. A perfect attention kernel would give about 1.5% of the
-weighted score.
+of the work. `stage_roofline.py --shapes 8` gives `sdpa` 2.2808 ms and
+`merge heads` 0.4113 ms of a 32.06 ms layer. A perfect attention kernel would
+give about 1.0% of the weighted score.
 
 ## 27. Gate the steel kernel on a string mask — a bug fix
 
@@ -1814,3 +1823,245 @@ Row 31 measured that `mx.fast.layer_norm` already runs at copy speed at
 An alternative is a `pre_bias` variant that does not normalize at all, and
 instead folds the deferred bias into whatever kernel reads the activation
 next. That was not explored.
+
+## 38. Retune the steel attention block shape against the MFA parameter table — REVERTED
+
+`steel_attention()` takes `bq`, `bk`, `wm` and `wn`, and every call site uses
+the default `bq=32, bk=32, wm=4, wn=1`. Nothing ever swept them.
+
+`metal-flash-attention` publishes a parameter table for this GPU family. Its
+FP32 forward table for Apple9 gives a parallelization block of **16** at every
+head width, and a traversal block of 32 at `head_dim <= 48` and 128 at
+`head_dim <= 8`. So the table predicted a gain on every steel shape.
+
+It does not transfer.
+
+### The constraint
+
+`steel_attention.h` line 174:
+
+```c
+static_assert(BQ >= (kNWarps * kFragSize) && BQ % (kNWarps * kFragSize) == 0, ...);
+constexpr int TQ = BQ / (kNWarps * kFragSize);
+static_assert(TQ == 1, "Check TQ");
+```
+
+`kNWarps = WM * WN` and `kFragSize = 8`, so `BQ = WM * WN * 8` exactly. `bq`
+and `wm` are one knob. `bq=16` forces `wm=2`, a 64 thread threadgroup against
+128 today.
+
+### The measurement
+
+100 repeats, median, `mx.synchronize()` after each `mx.eval()`. q, k and v are
+strided views of one fused QKV buffer, which is what the model gives the
+kernel. Ratios are against `bq=32, bk=32, wm=4`.
+
+Shape 6 chunk, B1024 H4 S128 `head_dim` 32, which carries 66.5% of the weight:
+
+| bq | wm | bk | ms | ratio |
+|---:|---:|---:|---:|---:|
+| 16 | 2 | 16 | 2.3743 | 1.000x |
+| 16 | 2 | 32 | 2.7289 | 0.870x |
+| 16 | 2 | 64 | 3.4236 | 0.693x |
+| 32 | 4 | 16 | 2.3804 | 0.997x |
+| **32** | **4** | **32** | **2.3734** | **1.000x** |
+| 32 | 4 | 64 | 2.9591 | 0.802x |
+| 32 | 4 | 128 | 4.0846 | 0.581x |
+| 64 | 8 | 16 | 2.8220 | 0.841x |
+| 64 | 8 | 32 | 2.7509 | 0.863x |
+| 64 | 8 | 64 | 2.7989 | 0.848x |
+| 64 | 8 | 128 | 3.7853 | 0.627x |
+
+The best other config on each remaining case:
+
+| Case | B, H, S, head_dim | Best other config | Ratio |
+|---|---|---|---:|
+| shape 13 | 64, 4, 1024, 32 | `bq=32 bk=16` | 1.002x |
+| shape 1 | 64, 4, 128, 32 | `bq=32 bk=16` | 0.946x |
+| shape 7 | 64, 4, 128, 8 | `bq=32 bk=64` | 0.859x |
+| shape 11 | 64, 16, 128, 8 | `bq=32 bk=64` | 0.902x |
+
+Accuracy held on every config: `max_abs` 1.01e-06 to 1.91e-06.
+
+### Why the table does not transfer
+
+1. **MFA caches Q and O in registers, and MLX does not.** MFA affords a 16 row
+   block because it also blocks over `head_dim`. MLX's kernel stages Q, K and
+   V through threadgroup memory at the full head width. At `bq=16` the
+   threadgroup halves to 64 threads, but every warp still loads the same K and
+   V fragments, so the K and V traffic for each output row doubles.
+
+2. **A smaller `bk` removes arithmetic that is not the limit.** `bk` sets how
+   tightly the kernel follows the causal triangle, because
+   `kb_lim = (q_max + BK - 1) / BK` skips a K block only when the whole block
+   sits above the diagonal. At `seq=128`, `bk=16` computes 9216 cells against
+   10240 at `bk=32`, a 10% cut. It buys nothing: `stage_roofline.py` puts this
+   stage at 101.5% of the measured bandwidth roof, so the stage is IO bound
+   and the removed arithmetic was already free.
+
+### Two configs do not compile
+
+`bq=16, bk=128` and `bq=64, bk=16` both fail with `[metal::Device] Unable to
+build metal library from source`. Neither was a contender, so the cause was
+not investigated.
+
+## 39. Shift the edge block in the steel GEMM — RULED OUT
+
+`metal-flash-attention` never bounds checks a GEMM edge. It moves the last
+block backwards so it overlaps the previous one
+(`GEMMKernel+Source.swift:140`):
+
+```c
+constant ushort M_shift = (M < M_group) ? 0 : registerM - M_remainder;
+```
+
+Every access stays in bounds, the inner loop needs no test, and the overlap is
+harmless because the same values are recomputed. `createStoreC()` then shifts
+the garbage zone from bottom right to top left before the store.
+
+The motivation was `choose_tile()`, which returns `None` when no tile divides
+M, N and K, and then drops the shape to the MLX pair.
+
+**That gate never fires.** Running `choose_tile()`'s own divisibility test on
+the real `ffn_in` dimensions of all 13 shapes:
+
+| # | M | N | K | Tiles that divide |
+|---:|---:|---:|---:|---|
+| 1 | 8192 | 128 | 128 | all four |
+| 2 | 128 | 128 | 128 | all four |
+| 3 | 512 | 128 | 128 | all four |
+| 6 | 131072 | 128 | 128 | all four |
+| 7 | 8192 | 32 | 32 | 64x32, 32x32 |
+| 8 | 8192 | 1024 | 1024 | all four |
+| 13 | 65536 | 128 | 128 | all four |
+
+Every appendix dimension is a power of two. Shape 2 keeps the MLX pair because
+of the `rows >= MIN_FUSED_GELU_ROWS` gate, which row 33 measured and which is
+correct: M=128 runs at 0.81x because shape 2 is kernel launch bound.
+
+Edge shifting would only matter for a shape whose M, N or K is not a multiple
+of 32 or 16. The appendix has none.
+
+## 40. Route the projections with no epilogue through the hoisted steel GEMM — REVERTED
+
+Row 33 measured `steel_addmm(gelu=True)` at 1.51x over `mlx_nn.gelu(mx.addmm())`
+at the shape 6 `ffn_in` stage. That number bundles two changes: the fused GELU
+epilogue and a different tile. If the tile carried any of it, the same tile
+would help `qkv proj`, `out proj` and `ffn_out`, none of which have an epilogue
+to fuse. `qkv proj` alone is **27.8% of the shape 6 layer**.
+
+It carries none of it. `steel_addmm(gelu=False)` against `mx.addmm` on the same
+GEMM, 8 tiles, 3 interleaved rounds of 100 repeats each:
+
+| Projection | M | N | K | Best steel tile | vs `mx.addmm` |
+|---|---:|---:|---:|---|---:|
+| shape 6 qkv | 131072 | 384 | 128 | `32x32x16` | 0.978x |
+| shape 6 out | 131072 | 128 | 128 | `32x64x16` | 0.991x |
+| shape 6 ffn_in | 131072 | 128 | 128 | `32x64x16` | **1.005x** |
+| shape 8 qkv | 8192 | 3072 | 1024 | `64x64x16` | 0.996x |
+| shape 8 out | 8192 | 1024 | 1024 | `64x64x16` | **1.027x** |
+
+`max_abs` is **0.00e+00** on all 40 readings. That is the proof: MLX dispatches
+`mx.addmm` to the same steel kernel this module hoists, and MLX already picks a
+good tile. There is no tile to win.
+
+**So row 33's 1.51x is entirely the epilogue.** The table entry for row 33 now
+says so.
+
+### The one sub-noise candidate
+
+Shape 8 `ffn_in` with the fused GELU prefers `64x64x16` over today's
+`32x64x16`, reproducibly: 4.8374, 4.8482, 4.8379 ms against 5.0857 ms, a
+**1.051x** with a 0.2% spread. Today's tile gives only 1.008x against the MLX
+pair there, so the fusion is break even at shape 8.
+
+It is not worth the code. `ffn_in` is 14% of the shape 8 layer and shape 8 is
+21.3% of the weight, so this is about **0.16% FLOP-weighted**, well under the
+1% noise floor row 28 measured. Taking it would also make `choose_tile()`
+depend on N and K, which is new complexity for a sub-noise gain.
+
+### Why `qkv proj` sits at 83.5% of peak
+
+It is a short-K GEMM: K=128 against N=384. The arithmetic intensity is fixed by
+the shape, not by the kernel. `stage_roofline.py` names it COMPUTE bound at
+83.5% of matmul peak, and no tile moved it.
+
+## 41. Reach the steel attention kernel at `head_dim = 256` with a narrow block — REVERTED
+
+This supersedes row 26, which guessed that `bk=8` would fit and never measured
+whether it was faster.
+
+`bk=8` does fit. Three block shapes fit the 32 KiB threadgroup at `bd=256`,
+because `BQ = WM * WN * 8` lets `bq` go below 32:
+
+| bq | wm | bk | Q_smem | KV_smem | total |
+|---:|---:|---:|---:|---:|---:|
+| 8 | 1 | 8 | 8.12 KiB | 12.00 KiB | 20.12 KiB |
+| 8 | 1 | 16 | 8.12 KiB | 20.00 KiB | 28.12 KiB |
+| 16 | 2 | 8 | 16.25 KiB | 12.00 KiB | 28.25 KiB |
+
+All three are slower than the fallback shape 8 runs today. Shape 8 attention,
+B64 H4 S128 `head_dim` 256, causal, 3 interleaved rounds of 100 repeats:
+
+| Path | ms | speedup | max_abs |
+|---|---:|---:|---:|
+| **MLX fallback (today)** | **3.0840** | **1.000x** | — |
+| steel `bq16 bk8 wm2` | 3.4134 | 0.904x | 1.19e-06 |
+| steel `bq8 bk8 wm1` | 5.5801 | 0.553x | 1.19e-06 |
+| steel `bq8 bk16 wm1` | 8.6021 | 0.359x | 1.19e-06 |
+
+Every one is bit accurate. They are just slower. At `BD=256` with `BK=8` the
+kernel runs 16 K block iterations, each staging a 256 wide operand, with one
+or two warps in the threadgroup. The threadgroup traffic per unit of work is
+what kills it.
+
+### The `d_outer` alternative, and why it is not worth building
+
+`metal-flash-attention` solves exactly this by adding a third block dimension
+over `head_dim` and spilling the O accumulator to device memory on purpose
+(`AttentionKernel+OuterProduct.swift:451`). Its threadgroup allocation is the
+**maximum** over operands, not the sum, so `head_dim=256` costs 8 KiB rather
+than 68.5 KiB.
+
+Three measurements say do not build it:
+
+1. **The ceiling is about 1% FLOP-weighted.** `stage_roofline.py --shapes 8`
+   puts `sdpa` at 2.2808 ms and `merge heads` at 0.4113 ms of a 32.06 ms
+   layer, so 8.4% of shape 8. Shape 8 is 21.3% of the weight. Even a 2x
+   returns about 1.0%.
+2. **The stage is IO bound, not compute bound.** It runs at 46% of the
+   bandwidth roof with the arithmetic units idle. `d_outer` solves register
+   pressure to raise ALU utilization. It does not create bandwidth.
+3. **Row 21's premise is weaker than recorded.** The profiler reports
+   `sdpa peak memory: 80.0 MiB allocated` against `128.0 MiB` for operands and
+   output alone, so the MLX fallback is **not** round tripping the
+   `B x H x S x S` scores through DRAM at S=128. The score matrix is 16 MiB.
+
+Against that, `d_outer` is a new attention kernel, not an edit. MLX's kernel
+has no head block dimension to set.
+
+## 42. Combine the batch chunks with something faster than `mx.concatenate` — REVERTED
+
+`forward()` runs shape 6 in 10 chunks and joins them with `mx.concatenate`.
+The output is 625 MiB, so the join reads and writes 1.25 GiB.
+
+`mx.concatenate` is already at the roof. 625 MiB in **10.185 ms is 119.9 GB/s**,
+against the 128 GB/s measured on this machine. Every alternative is about 7x
+worse, because it moves the bytes on the CPU:
+
+| Route | ms | GB/s | bit equal |
+|---|---:|---:|---|
+| **`mx.concatenate`** | **10.185** | **119.9** | — |
+| `torch.cat` on aliased views | 72.317 | 16.9 | yes |
+| `torch.copy_` into a preallocated tensor | 77.016 | 15.8 | yes |
+| numpy slice assign on aliased views | 84.725 | 14.4 | yes |
+
+Unified memory means `_to_torch()` can alias an MLX buffer with no copy
+(row 23), but it does not make a CPU memcpy fast. Leave the join on the GPU.
+
+### A false lead, recorded so it is not chased again
+
+Timing the whole chunk loop with and without the join suggested the join cost
+36.5 ms, not 10.2 ms. The difference is not copy cost. It is allocator
+pressure: holding all 10 chunks plus the output alive is 1.25 GiB. Measure the
+join on its own, not by subtracting two loop timings.
