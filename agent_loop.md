@@ -616,17 +616,46 @@ steps reduce a row with no barrier.
 
 The queue is empty again except for row 45, which is under the noise floor.
 
-## The queue, after turn 8
+### Turn 9 — row 48: built, correct, REVERTED
+
+The block is at its roofs, so this turn looked OUTSIDE the block, at
+`forward()`. Nothing had re-read it since row 23, and its share had tripled:
+the kernels got 3.7x faster and the framework boundary did not. A fresh
+breakdown put **4.5% FLOP-weighted outside the kernels**, more than any row
+still OPEN.
+
+The prototype converts chunk `i+1` while the GPU runs chunk `i`. It is bit
+equal and it gives **0.974x**.
+
+**It fails on the memory system, not on the code.** A controlled arm adds an
+UNRELATED 625 MiB CPU memcpy to the chunk loop. That memcpy costs 31.40 ms
+alone and **+45.06 ms inside the loop**: overlapping is worse than serial.
+Unified memory gives the CPU and the GPU one controller, and the shape 6
+block already runs at 105% and 110% of the memory roof, so every byte the
+CPU moves is taken from the GPU.
+
+This rules out the whole class: double buffering, a copy stream, a background
+conversion thread. Do not spend another turn on it.
+
+**The lesson.** On a discrete GPU the transfer crosses PCIe while the GPU
+reads VRAM, so overlap is free. Do not carry that instinct to this machine.
+Before proposing any overlap here, ask which memory system each side uses.
+
+## The queue, after turn 9
 
 | Order | Row | What | Estimated value | Risk |
 |---:|---:|---|---|---|
 | 1 | 45 | Build the deferred bias `carry` at weight build time | about 0.1% FLOP-weighted, under the noise floor | low. Row 46 already did most of it |
 
-Row 47 is done. Rows 16, 19, 21 and 22 stay out of reach: 16 cannot pass the
-tolerance, 21 waits for an MLX upgrade, and 19 and 22 apply to no appendix
-shape. The next real prize needs a new roofline: run
-`profiling/stage_roofline.py` again, and read every row EXCEPT `ln1 stats`
-and `ln2 stats`, which row 47 made stale.
+Rows 47 and 48 are done. Rows 16, 19, 21 and 22 stay out of reach: 16 cannot
+pass the tolerance, 21 waits for an MLX upgrade, and 19 and 22 apply to no
+appendix shape.
+
+**There is no queue left with a measured prize.** Every stage of the block is
+at a roof, and row 48 closed the one region outside it. The next turn has to
+find a NEW prize, not work an old one: run `profiling/stage_roofline.py`
+again, and read every row EXCEPT `ln1 stats` and `ln2 stats`, which row 47
+made stale.
 
 ## The queue, after turn 7
 

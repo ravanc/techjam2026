@@ -65,6 +65,7 @@ Status:
 | 44 | Chain `ffn_in` and `ffn_out` into one kernel | **REVERTED** | `profiling/chain_probe.py`, not in the model | — | built, correct, and it LOSES. Best of 40 configurations is **0.969x**, and a repeat run gave 0.960x. The chain deletes the 128 MiB `hidden` round trip, worth about 1.1 ms, but one threadgroup must own all of `ffn_dim` to hold the row, and the threadgroup memory that costs takes more than the round trip gives. Controlled pair at `bm = 32`: `bk8` uses 24.0 KiB and reaches 0.996x, `bk16` uses 29.0 KiB and reaches 0.896x — same tile, more threadgroup, worse time. Relative error 3e-07, so it is correct, just slower |
 | 45 | Build the deferred bias `carry` at weight build time | **OPEN** | partly delivered: `TorchToMLX` weight build L984-L1000 folds the carry into row 46's `ln1c3`/`ln2c3` | what remains is the run-time accumulation at `_mlx_transformer()` L821 and L849, which serves the final LayerNorm and any shape that declines row 46 (shape 2) | not measured, and a sweep CANNOT measure it. It is 2 kernels for each layer on a `(d_model,)` vector, so about 8 launches of 0.004 ms each for the whole forward. That is about **0.1% FLOP-weighted**, under the 1% noise floor. Worth doing for shape 2 alone, and shape 2 carries 0.0% of the FLOP weight |
 | 46 | Absorb the LayerNorm into the weights, and apply it in the GEMM epilogue | **KEPT** | `fast_layernorm.py` `layer_norm_stats()` L205; `steel_gemm.py` `layer_norm_constants()` L610 and the `apply_layer_norm_epilogue` patch at L85; gated at `plan_kernels()`; used at `_mlx_transformer()` | float32, unpadded, no padded head, rows >= 512, and a tile that divides M, N and K. **Shapes 1 and 3-13, shape 8 included.** Shape 2 keeps the plain path | **1.060x FLOP-weighted** (MLX 722.3 ms to 681.4 ms over the 13 shapes). Shape 6 **1.073x**, shape 12 1.152x, shape 4 1.139x, shape 3 1.103x, shape 13 1.057x, shape 8 1.012x. Two controls: MPS held at **0.992x** across the two sweeps, and shape 2, which declines this row, moved 0.974x on MLX while its own MPS control moved 0.919x, so that is machine noise on a 0.65 ms shape and not a regression. All 13 shapes PASS, `max_abs` 1.07e-06 to 3.34e-06. 18/18 padding cases pass. It supersedes row 43. It supersedes row 43, which tried the same prize with a prologue and lost the tile. A LayerNorm is affine in the row, so it distributes through the matmul that follows it and folds into three constants built at weight build time. What is left at run time is one GEMM over RAW `x` and an epilogue that reads two floats for the row, so **the LayerNorm never writes an activation**. Worth about **1.0 ms per shape 6 layer, or 7.2%**: it replaces `ln1` and `ln2` (1.914 ms) with two statistics passes (about 0.92 ms). **The accuracy risk is measured and it passes**: 0.9x to 1.2x of the error the model already carries, on shapes 6, 7, 8 and 13, by `profiling/ln_absorb_probe.py`. Unlike row 43 it has no `d_model < 256` gate, so it reaches shape 8 (21.3% of the FLOP weight) and it subsumes row 37 |
+| 48 | Hide the framework boundary behind the GPU, by pipelining the chunk loop | **REVERTED** | `profiling/pipeline_probe.py`, not in the model | — | built, correct, and it LOSES: **0.974x**. Unified memory means the CPU copy and the GPU kernels contend for one memory system, so the copy does not hide. An unrelated 625 MiB CPU memcpy costs 31.40 ms alone and **+45.06 ms inside the loop**, so overlapping is WORSE than serial. A second run gave 34.53 ms alone and +31.31 ms inside, 91% unhidden. A lagged eval with the bulk convert kept gives 1.004x, inside the noise floor. **This rules out the whole class of transfer-overlap ideas on this machine.** The boundary is real (5.4% of shape 6, about 4.5% FLOP-weighted) but it is not recoverable this way |
 | 47 | Produce the LayerNorm statistics in the epilogue of the GEMM that writes the activation | **KEPT** | `steel_gemm.py` `_ROW_STATS_EPILOGUE` and `row_stats_reduce()`; gated at `plan_kernels()` `fuse_stats_out` and `fuse_stats_ffn`; used at `_mlx_transformer()` | float32, unpadded, `use_defer_bias`, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13, shape 8 included. Shape 2 keeps the plain path | **1.075x FLOP-weighted** (MLX 686.6 ms to 638.7 ms over the 13 shapes). Shape 6 **1.091x**, shape 3 1.098x, shape 7 1.089x, shape 5 1.081x, shape 11 1.067x, shape 13 1.045x, shape 8 1.027x. Control: MPS held at a 1.006x median across the two sweeps, and shape 6's own MPS moved 0.970x, so the machine was if anything slower. Shape 12 read 0.922x in the sweep; a controlled interleaved A/B says **1.008x to 1.013x**, so that reading was machine drift and not a regression. All 13 shapes PASS, `max_abs` 1.19e-06 to 3.46e-06. 18/18 padding cases bit exact |
 
 Line numbers are in `torch_transformer_benchmark.py`.
@@ -570,6 +571,13 @@ The share grows with the size of the activation:
 An earlier version of this section reported 0.8% at the default size only.
 That number is correct for that size. It hid the cost at shape 6, which
 carries 66.5% of the FLOP-weighted score.
+
+**The table above is stale, and its SHARES are stale by more than its
+milliseconds.** The kernels are 3.7x faster since it was taken, and the
+boundary is not, so the same copy is now 3.1% of shape 6 rather than 1.0%.
+Row 48 re-measured it and tried to hide it behind the GPU. It cannot be
+hidden: unified memory makes the copy and the kernels contend. Read row 48
+for the current numbers.
 
 ### The output copy was avoidable
 
@@ -2835,3 +2843,106 @@ their own stages. That tool builds a block from the plan, and it does not
 model this epilogue, so its `ln1 stats` and `ln2 stats` rows now describe a
 pass the model no longer runs on a shape that fuses. Read the two rows as
 the prize this row took, not as current cost.
+
+## 48. Hide the framework boundary behind the GPU — REVERTED
+
+Built as a prototype, correct, and it loses. **Do not try it again, and do
+not try any other form of it**: the reason is the memory system, not the
+code.
+
+### Why it looked worth doing
+
+Row 23 measured the input copy at 17.4 ms of a 1678 ms shape 6 call and
+called it 1.0%. Nobody re-read it after that. The kernels then got 3.7x
+faster and the copy did not, so the same milliseconds are now 3.1%.
+
+Measured again on 30 August 2026, with a breakdown of `forward()`:
+
+| shape | FLOP share | `_to_mlx` | `mx.concatenate` | GPU loop | boundary |
+|---:|---:|---:|---:|---:|---:|
+| 6 | 66.5% | 13.951 | 10.292 | 422.4 | **5.4%** |
+| 8 | 21.3% | 2.085 | — | 115.4 | 1.8% |
+| 13 | 9.4% | 2.004 | — | 37.7 | **5.1%** |
+| 1 | 0.4% | 0.241 | — | 3.3 | 6.8% |
+
+That is about **4.5% FLOP-weighted spent outside the kernels**, which was
+more than any row still OPEN. The GPU is idle for all of it.
+
+### What was built
+
+Shape 6 runs 10 chunks. `forward()` converts all 626 MiB before it queues
+any GPU work, and `mx.eval(part)` inside the loop drains the GPU on every
+pass. The prototype converts chunk `i+1` while the GPU runs chunk `i`:
+
+    part = call(_to_mlx(x[start:stop]), ...)   # queue; returns at once
+    if pending is not None:
+        mx.eval(pending)                       # wait for the PREVIOUS chunk
+
+`profiling/pipeline_probe.py` holds it, with six arms. Every arm is bit
+equal to the model today.
+
+### The measurement
+
+| arm | ms | vs today | peak GiB |
+|---|---:|---:|---:|
+| today | 448.283 | 1.000x | 4.18 |
+| convert in loop | 469.586 | 0.955x | 3.02 |
+| **pipeline** | 460.268 | **0.974x** | 3.07 |
+| loop alone (input preconverted) | 454.860 | 0.986x | 2.96 |
+| loop + unrelated memcpy | 499.921 | 0.897x | 2.96 |
+| loop, lagged eval, bulk convert | 446.647 | 1.004x | 2.96 |
+
+### Why it loses. It is unified memory
+
+The copy is not slower when it is split. Timed with NO GPU work at all,
+625 MiB through `_to_mlx`:
+
+| route | ms | GB/s |
+|---|---:|---:|
+| bulk, 1 call | 13.261 | 46.0 |
+| 10 chunks | 13.976 | 43.7 |
+
+So the loss is not the chunking. It is contention.
+
+**The controlled test.** Arm `loop + memcpy` adds an UNRELATED 625 MiB CPU
+memcpy to the chunk loop. It touches none of the model's data, so it can only
+compete for bandwidth:
+
+| run | memcpy alone | added to the loop | hidden |
+|---|---:|---:|---:|
+| 1 | 34.53 ms | +31.31 ms | 9% |
+| 2 | 31.40 ms | **+45.06 ms** | **-43%** |
+
+Run 2 is the whole answer: overlapping the copy with the GPU is **worse than
+running it on its own**. There is no separate bus. The CPU and the GPU read
+and write the same DRAM through the same controller, and the shape 6 block is
+already memory bound — `stage_roofline.py` puts `out proj` at 105% and
+`ffn_out` at 110% of the 128 GB/s roof. Every byte the CPU moves comes
+straight out of the GPU's throughput.
+
+**This is what makes the trick work on a discrete GPU and fail here.** There
+the copy crosses PCIe while the GPU reads its own VRAM, so the two are
+genuinely parallel. On an M3 Pro they are the same resource.
+
+### The lagged eval is separately dead
+
+Arm `loop, lagged eval` keeps the fast bulk conversion and only stops the GPU
+queue from draining at each chunk boundary. It gives **1.004x**, inside the
+1% noise floor. So `mx.eval(part)` inside the loop costs nothing, and it can
+stay: it is what bounds the working set.
+
+### What survives
+
+Nothing for speed. One observation worth keeping: converting per chunk cuts
+the peak from **4.18 GiB to 3.02 GiB**, because the whole 626 MiB input is
+never live beside the chunk intermediates. Row 10 chose chunking for exactly
+this reason. If a future shape runs out of the 12 GiB budget, this is the
+lever, and it costs about 4.5% of shape 6.
+
+### What it rules out
+
+Every variant of "overlap the transfer with compute" on this machine:
+double buffering, a copy stream, a background thread doing `_to_mlx`,
+converting the next batch during the current one. They all move bytes through
+the one memory system that the kernels are already saturating. The 4.5% is
+real and it is not recoverable this way.

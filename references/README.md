@@ -45,3 +45,4 @@ Rules for this directory:
 | `profiling/stage_roofline.py` | Splits one block into stages, times each, and names the limit: compute, IO or launch. Its `ln1 stats` and `ln2 stats` rows are stale since row 47. |
 | `profiling/ln_tiled_stats_probe.py` | The accuracy screen for row 47. It measures the residual drift, which decides whether a tiled reduction can use the uncentred variance. |
 | `profiling/plan_ab.py` | A/B one `KernelPlan` field in one process, interleaved. A shape under about 2 ms moves further with the machine than with the code, so a two-sweep ratio cannot score it. |
+| `profiling/pipeline_probe.py` | Whether a CPU copy hides behind GPU work. It does not: on unified memory the two contend for one controller, and overlapping is worse than serial. Row 48. |

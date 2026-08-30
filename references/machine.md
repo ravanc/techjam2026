@@ -242,3 +242,24 @@ already happened in this repository.
    [../profiling/README.md](../profiling/README.md).
 3. **A short run gives a false median.** `--repeats 3` gave 7.198x where
    `--repeats 100` gave 4.590x on the same build. Use the default repeats.
+
+## The CPU and the GPU share one memory system
+
+Unified memory is not only a convenience for zero-copy. It is a **shared
+bandwidth budget**, and it decides which optimizations can work.
+
+| Mover | Rate |
+|---|---|
+| GPU, measured roof | 128 GB/s |
+| CPU, `mx.array(numpy)` copy | 46 GB/s |
+| CPU, `np.array(mlx)` copy | 15 to 22 GB/s |
+
+A CPU copy and a GPU kernel do NOT overlap. They contend. Measured on the
+shape 6 chunk loop, which runs at 105% to 110% of the memory roof: an
+unrelated 625 MiB CPU memcpy costs **31.40 ms alone and +45.06 ms inside the
+loop**. Overlapping it is worse than running it on its own.
+
+So do not carry a discrete-GPU instinct here. There a transfer crosses PCIe
+while the GPU reads its own VRAM, and double buffering is free. On this
+machine both sides use the one controller. See OPTIMIZATIONS.md row 48 and
+`profiling/pipeline_probe.py`.

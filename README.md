@@ -180,6 +180,7 @@ what each turn measured.
 | `profiling/ln_absorb_probe.py` | The accuracy screen for row 46, against a float64 reference |
 | `profiling/ln_tiled_stats_probe.py` | The accuracy screen for row 47: a tiled reduction against a float64 reference |
 | `profiling/plan_ab.py` | A/B one `KernelPlan` field in one process, interleaved. Use it on a shape under 2 ms, where a sweep cannot decide |
+| `profiling/pipeline_probe.py` | Whether the framework boundary can hide behind the GPU. It cannot: unified memory makes the two contend. Row 48 |
 | `agent_loop.md` | The optimization loop: the screens, the four gates, and the run log |
 | `references/` | Measured facts: the machine, the shapes, the MLX kernels, the scoreboard |
 
