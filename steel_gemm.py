@@ -106,6 +106,33 @@ _MMA_ANCHOR = """  /* Apply epilogue */
 #
 # It has NO bounds check, so the caller must use an aligned tile.
 # `steel_addmm()` refuses the unaligned case.
+# `store_result_tgp` writes the accumulator to THREADGROUP memory, not
+# device, so a second GEMM can read it as its A operand without a DRAM round
+# trip. Apple's `store_result` writes to device only.
+#
+# **Nothing in the model uses this.** It exists for row 44, which chained
+# `ffn_in` and `ffn_out` and LOST. `profiling/chain_probe.py` holds that
+# kernel and its measurement. The method stays here because the patch belongs
+# beside the other one, and because it is the piece a future attempt needs.
+# See OPTIMIZATIONS.md row 44. This mirrors it exactly: the same
+# epilogue pass, the same `sm * ld + sn` offset, and the same `MMATile::store`
+# with the threadgroup overload. `LDH` is the leading dimension of the
+# `hidden` tile, and it is a compile-time constant.
+_TGP_STORE = """
+  /* Store the accumulator to threadgroup memory. See OPTIMIZATIONS.md row 44. */
+  template <short LDH>
+  METAL_FUNC void store_result_tgp(threadgroup U* H) thread {
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
+      Ctile.elems()[i] = Epilogue::apply(Ctile.elems()[i]);
+    }
+
+    H += sm * LDH + sn;
+    Ctile.template store<U, WM, WN, LDH, 1>(H);
+  }
+
+"""
+
 _LN_EPILOGUE = """
   /* LayerNorm epilogue. Added by steel_gemm.py. See OPTIMIZATIONS.md row 46. */
   METAL_FUNC void apply_layer_norm_epilogue(
@@ -148,7 +175,8 @@ def _read(rel: str) -> str:
             raise RuntimeError(
                 "the binary apply_epilogue in mma.h did not match; MLX "
                 "changed the file, so re-check steel_gemm.py")
-        text = text.replace(_MMA_ANCHOR, _LN_EPILOGUE + _MMA_ANCHOR, 1)
+        text = text.replace(
+            _MMA_ANCHOR, _TGP_STORE + _LN_EPILOGUE + _MMA_ANCHOR, 1)
     return text
 
 

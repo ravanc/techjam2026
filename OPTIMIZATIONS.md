@@ -62,7 +62,7 @@ Status:
 | 41 | Reach the steel attention kernel at `head_dim = 256` with a narrow block | **REVERTED** | — | — | supersedes row 26. Three block shapes fit 32 KiB at `bd256`. Best is `bq16 bk8 wm2` at **0.904x** against the MLX fallback; `bq8 bk8` gives 0.553x and `bq8 bk16` gives 0.359x. Bit accurate (`max_abs` 1.19e-06), just slower |
 | 42 | Combine the batch chunks with something faster than `mx.concatenate` | **REVERTED** | — | — | `mx.concatenate` already runs at **119.9 GB/s** on the shape 6 output (625 MiB in 10.185 ms), against a 128 GB/s roof. Every alternative is about 7x worse, because a CPU-side copy of unified memory runs at 14-17 GB/s: `torch.cat` 72.3 ms, `torch.copy_` 77.0 ms, numpy slice assign 84.7 ms. All three are bit equal |
 | 43 | Fold the LayerNorm into the prologue of the following GEMM | **REVERTED** | — | float32, `fast_layernorm` shapes with a large activation. Shape 6 above all | the prize is real and re-measured: `ln1` and `ln2` are **1.914 ms of a 13.634 ms shape 6 layer (14.0%)**, and no better LayerNorm kernel can win them, because `fast_layernorm` already runs at copy speed. Only fewer bytes can. **Route 1 (recompute the statistics inside the tile) is measured DEAD.** It needs one A tile to cover a whole row, so `bk = K = 128`, and the 32 KiB threadgroup then caps the tile at `bm + bn <= 62` against `bm32 bn64` today. Every one of the 24 tiles that compiles is bit exact (`max_abs` 0.00e+00) and **at best 0.543x**: `qkv proj` 3.602 -> 6.637 ms and `ffn_in` 1.345 -> 2.467 ms, so route 1 ADDS 4.157 ms to save 1.914 ms. The prize is real, so it moves to **row 46**, which reaches it without a prologue |
-| 44 | Chain `ffn_in` and `ffn_out` into one kernel | **OPEN** | — | float32, every appendix shape, because `ffn_dim == d_model` on all of them | not tried, and **it is the rung that makes shape 6 compute bound**. `ffn_in` writes `hidden` (64 MiB) and `ffn_out` reads it back. Chaining deletes the round trip: 128 MiB, taking the shape 6 memory floor to **7.344 ms against a 7.414 ms compute floor**. Feasible only because `appendix_cases.py` sets `ffn_dim == d_model` everywhere, so there is no 4x expansion: at shape 6 one `bm = 32` row block holds `32 x 128 x 4 = 16 KiB` of `hidden`, inside the 32 KiB threadgroup limit. **The tile it needs is now measured, and it is affordable.** The second GEMM needs a whole `hidden` row, so the first GEMM's `bn` must cover all of `ffn_dim`: `bn = 128` against `bn = 64` today. That tile costs only **0.884x** (`ffn_in + gelu` 1.680 -> 1.899 ms, `max_abs` 4.77e-07 against `mlx_nn.gelu(mx.addmm(...))`) and the threadgroup fits at **12.5 KiB of As+Bs plus 16.0 KiB of `hidden` = 28.5 KiB**. Measured by `.venv/bin/python3 profiling/tile_probe.py --row 44`. Deleting the 128 MiB round trip is worth about 0.90 ms against a 0.22 ms tile penalty, so the estimate is **about 0.69 ms per layer, or 5.0% of shape 6**. That is smaller than the memory-floor figure above, because `ffn_in` is already COMPUTE bound. This row does NOT depend on row 43: `bn = 128` and `bk = 16` are independent constraints |
+| 44 | Chain `ffn_in` and `ffn_out` into one kernel | **REVERTED** | `profiling/chain_probe.py`, not in the model | — | built, correct, and it LOSES. Best of 40 configurations is **0.969x**, and a repeat run gave 0.960x. The chain deletes the 128 MiB `hidden` round trip, worth about 1.1 ms, but one threadgroup must own all of `ffn_dim` to hold the row, and the threadgroup memory that costs takes more than the round trip gives. Controlled pair at `bm = 32`: `bk8` uses 24.0 KiB and reaches 0.996x, `bk16` uses 29.0 KiB and reaches 0.896x — same tile, more threadgroup, worse time. Relative error 3e-07, so it is correct, just slower |
 | 46 | Absorb the LayerNorm into the weights, and apply it in the GEMM epilogue | **KEPT** | `fast_layernorm.py` `layer_norm_stats()` L205; `steel_gemm.py` `layer_norm_constants()` L610 and the `apply_layer_norm_epilogue` patch at L85; gated at `plan_kernels()`; used at `_mlx_transformer()` | float32, unpadded, no padded head, rows >= 512, and a tile that divides M, N and K. **Shapes 1 and 3-13, shape 8 included.** Shape 2 keeps the plain path | **1.060x FLOP-weighted** (MLX 722.3 ms to 681.4 ms over the 13 shapes). Shape 6 **1.073x**, shape 12 1.152x, shape 4 1.139x, shape 3 1.103x, shape 13 1.057x, shape 8 1.012x. Two controls: MPS held at **0.992x** across the two sweeps, and shape 2, which declines this row, moved 0.974x on MLX while its own MPS control moved 0.919x, so that is machine noise on a 0.65 ms shape and not a regression. All 13 shapes PASS, `max_abs` 1.07e-06 to 3.34e-06. 18/18 padding cases pass. It supersedes row 43. It supersedes row 43, which tried the same prize with a prologue and lost the tile. A LayerNorm is affine in the row, so it distributes through the matmul that follows it and folds into three constants built at weight build time. What is left at run time is one GEMM over RAW `x` and an epilogue that reads two floats for the row, so **the LayerNorm never writes an activation**. Worth about **1.0 ms per shape 6 layer, or 7.2%**: it replaces `ln1` and `ln2` (1.914 ms) with two statistics passes (about 0.92 ms). **The accuracy risk is measured and it passes**: 0.9x to 1.2x of the error the model already carries, on shapes 6, 7, 8 and 13, by `profiling/ln_absorb_probe.py`. Unlike row 43 it has no `d_model < 256` gate, so it reaches shape 8 (21.3% of the FLOP weight) and it subsumes row 37 |
 
 Line numbers are in `torch_transformer_benchmark.py`.
@@ -2296,61 +2296,90 @@ Route 2 puts no constraint on `bk`, because the statistics arrive as two
 floats per row, so it keeps the `bm32 bn64 bk16` tile. It grew into its own
 optimization, and it now lives at **row 46** with its own measurement.
 
-## 44. Chain `ffn_in` and `ffn_out` into one kernel — OPEN
+## 44. Chain `ffn_in` and `ffn_out` into one kernel — REVERTED
 
-### Why it is possible here and not in a normal transformer
+It was built, it is correct, and it loses. The kernel and the sweep live in
+`profiling/chain_probe.py`:
 
-`appendix_cases.py` sets `ffn_dim == d_model` on every shape (lines 89-101).
-A normal transformer uses `ffn_dim = 4 * d_model`, and then `hidden` is far too
-wide to hold in threadgroup memory, so the two FFN matmuls must stay apart.
-Here they do not.
+    .venv/bin/python3 profiling/chain_probe.py
 
-At shape 6, `d_model = ffn_dim = 128`. One `bm = 32` row block of `hidden` is
-`32 x 128 x 4 = 16 KiB`, inside the 32 KiB threadgroup limit. So one threadgroup
-can compute a `[bm, ffn_dim]` tile of `hidden`, keep it resident, and consume it
-straight away as the A operand of `ffn_out`. `bn` must cover the whole of
-`ffn_dim` in one tile, which it does at 128.
+### What it does
 
-### The prize
+`ffn_in` writes `hidden` to DRAM and `ffn_out` reads it straight back. At the
+shape 6 chunk that round trip is 128 MiB, about 1.1 ms of a 12.0 ms layer.
 
-Deleting the `hidden` round trip removes 128 MiB from the 1280.5 MiB layer.
+The chained kernel keeps `hidden` in threadgroup memory:
 
-| step | traffic MiB | memory floor | FLOP/B | binds |
-|---|---:|---:|---:|---|
-| today | 1280.5 | 10.490 ms | 22.4 | MEMORY |
-| after row 43 | 1024.5 | 8.393 ms | 28.0 | MEMORY |
-| **after this row** | **896.5** | **7.344 ms** | **32.0** | **COMPUTE** |
+    phase 1   hidden = gelu(layer_norm(x) @ W1 + b1)   -> threadgroup
+    phase 2   out    = residual + hidden @ W2          -> device
 
-The compute floor is 7.414 ms and does not move, because the FLOP count is
-fixed by the model. This row is therefore the rung that crosses the 31.7
-FLOP/byte ridge and makes shape 6 compute bound.
+Three pieces made it possible, and all three were checked before it was
+written:
 
-### Stop here
+1. `BlockMMA::mma()` already takes a THREADGROUP pointer for its A operand
+   and strides it by the template constant `lda_tgp`. So phase 2 reads
+   `hidden` in place, with `lda_tgp = ffn_dim + 4`.
+2. `MMATile::store` has a threadgroup overload, so `store_result_tgp` writes
+   the phase 1 accumulator into `hidden`.
+3. The budget fits, but only with aliasing: phase 2's `Bs2` reuses the dead
+   `As1` and `Bs1`. Peak 29.0 KiB of 32.0 at `bm32 bk16`. Without the
+   aliasing it is 39.0 KiB and does not fit at all.
 
-Two further fusions are possible and both are worth nothing until the kernels
-themselves get closer to peak:
+It is possible only because `appendix_cases.py` sets `ffn_dim == d_model` on
+every shape. A normal transformer with `ffn_dim = 4 * d_model` cannot hold a
+row block of `hidden` at all.
 
-| further step | traffic MiB | memory floor | gain |
-|---|---:|---:|---|
-| out proj into the sdpa epilogue | 768.5 | 6.296 ms | **none.** 7.414 ms compute floor already binds |
-| qkv into sdpa | 384.5 | 3.150 ms | **none**, same reason |
+### Why it loses
 
-Do not build either one. After this row the constraint is arithmetic, so the
-next question becomes the 1.23x gap between the measured 12.940 ms and the
-10.490 ms floor, which is GEMM tile efficiency, not traffic.
+One threadgroup must own `bm` rows and ALL of `ffn_dim`, so `bn1 = ffn_dim`
+and there is a single N tile. That is exactly what makes the whole `hidden`
+row available to phase 2. It is also what makes the kernel
+threadgroup-hungry, and threadgroup memory is what limits how many
+threadgroups stay resident on a core.
 
-### Expected effect
+Best of 40 configurations, at the shape 6 chunk (M = 131072, K = 128,
+N = 128), against the three kernels the model runs today:
 
-Holding today's 1.23x gap between measurement and floor:
+| tile | threadgroup | best ratio |
+|---|---:|---:|
+| `bm32 bk8 wm4 wn2` | 24.0 KiB | **0.969x** |
+| `bm32 bk8 wm2 wn4` | 24.0 KiB | 0.994x on one run, 0.968x on another |
+| `bm16 bk16 wm2 wn4` | 19.5 KiB | 0.966x |
+| `bm32 bk16 wm2 wn4` | 29.0 KiB | 0.896x |
+| `bm32 bk16 wm4 wn1` | 29.0 KiB | 0.614x |
+| `bm8 bk16 wm1 wn4` | 14.8 KiB | 0.694x |
 
-| built | ms per layer | shape 6 |
-|---|---:|---|
-| row 43 alone | 10.35 | 1.25x |
-| row 43 + this row | 9.14 | **1.41x** |
-| perfect kernels | 7.41 | 1.75x, the ceiling |
+**The controlled pair is the evidence.** Hold `bm = 32` and change only
+`bk`:
 
-Shape 6 carries 66.5% of the FLOP weight. Shape 8 gains nothing: `ffn_dim` is
-1024 there, so `hidden` is 96 MiB per row block and cannot stay resident.
+| | threadgroup | best |
+|---|---:|---:|
+| `bk = 8` | 24.0 KiB | **0.996x** |
+| `bk = 16` | 29.0 KiB | **0.896x** |
+
+Same tile shape, more threadgroup memory, worse time. Occupancy is the
+mechanism.
+
+The two ends of the sweep confirm it from the other side. A small `bm`
+lowers threadgroup use but wastes the tile: `bm8` reaches only 0.694x. So
+the kernel is squeezed between a tile too small to be efficient and a
+threadgroup too large to be resident, and no point between them wins.
+
+### It is correct, so this is a speed result and nothing else
+
+Relative error against the four-kernel path is 3.6e-07 at 1024 rows,
+4.4e-07 at 4096 rows, and 2.4e-07 at `d_model` 32. The arithmetic is right.
+
+### What this does NOT rule out
+
+The round trip is still 128 MiB and still real. What failed is deleting it
+by holding `hidden` in threadgroup memory. Any future attempt has to find a
+way that does not spend the occupancy, and this row does not know one.
+
+Do not try the same shape of kernel again. The tile probe in
+`profiling/tile_probe.py` measured the `bn = ffn_dim` tile at 0.884x before
+this was built, and the full kernel came in at 0.969x, so the extra loss
+beyond the tile is the occupancy.
 
 ## 46. Absorb the LayerNorm into the weights, and apply it in the GEMM epilogue — KEPT
 

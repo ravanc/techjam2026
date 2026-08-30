@@ -112,9 +112,13 @@ once. What is left at run time is two floats for each row:
 
 ### What is still open
 
+Rows 43 and 44 both tried to delete a DRAM round trip inside the FFN, and
+both were measured and reverted. Row 46 deleted the LayerNorm round trip
+instead, and it is what shipped. See OPTIMIZATIONS.md.
+
+
 | # | Bottleneck | Size | Why it is still open |
 |---:|---|---|---|
-| 44 | `ffn_in` writes `hidden` and `ffn_out` reads it back | about **5.0%** of the shape 6 layer | Chaining the two GEMMs deletes a 128 MiB round trip. The tile it needs is measured: `bn = 128` costs 0.884x, and the threadgroup holds `hidden` at 28.5 KiB of 32. It is a two GEMM kernel with a threadgroup handoff, so the cost is difficulty |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
 | — | qkv proj | 3.56 ms, 31% of the shape 6 layer | The largest stage, and it already runs at 89% of the matmul peak. It holds 43% of the block FLOPs because it is three projections in one |
 | — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Shape 2 declines every fused path because it has 128 rows, under the 512 row gate |

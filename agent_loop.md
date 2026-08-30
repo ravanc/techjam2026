@@ -400,6 +400,81 @@ whole-machine check.
 - **Gate:** PASSED on the per-shape control.
 - **Next:** row 44, the last item in the queue.
 
+### Turn 6 — row 44: built, correct, REVERTED
+
+The last item in the queue, and the only substantial one left.
+
+**What it did.** Kept `hidden` in threadgroup memory so `ffn_out` reads it
+from there instead of DRAM. That deletes a 128 MiB round trip, about 1.1 ms
+of a 12.0 ms shape 6 layer.
+
+**The screens passed.** All three prerequisites were checked before a line
+was written: `BlockMMA::mma()` already takes a threadgroup A pointer,
+`MMATile::store` has a threadgroup overload, and the budget fits at 29.0 KiB
+of 32 with phase 2's `Bs2` aliased onto the dead phase 1 buffers.
+
+**The gate failed on speed.** Best of 40 configurations is **0.969x**, and a
+repeat gave 0.960x. Nothing wins.
+
+**Why.** One threadgroup must own all of `ffn_dim` to hold the row, and that
+is what makes the kernel threadgroup-hungry. Threadgroup memory limits
+residency. The controlled pair, at a fixed `bm = 32`:
+
+| | threadgroup | best |
+|---|---:|---:|
+| `bk = 8` | 24.0 KiB | 0.996x |
+| `bk = 16` | 29.0 KiB | 0.896x |
+
+Same tile, more threadgroup memory, worse time. And a small `bm` lowers the
+memory but wastes the tile: `bm8` reaches 0.694x. The kernel is squeezed
+between a tile too small to be efficient and a threadgroup too large to be
+resident.
+
+**The screen under-predicted the loss, and that is worth recording.**
+`tile_probe.py` measured the `bn = ffn_dim` tile at 0.884x. The full kernel
+came in at 0.969x — BETTER than the tile alone, because the deleted round
+trip does pay for part of it. So the screen was directionally right about
+the cost and could not see the occupancy term. A screen bounds one effect.
+It does not predict a kernel.
+
+**Where the code went.** `profiling/chain_probe.py`, not the model. It is a
+working kernel that loses, so it belongs with the measurement, not in
+`steel_gemm.py`. `store_result_tgp` stays in the mma patch, marked as used
+by the probe alone.
+
+- **Gate:** FAILED on gate 3. Row 44 is REVERTED.
+- **Next:** the queue is empty. See below.
+
+### The queue is empty
+
+Every row that was OPEN when this loop started is now decided:
+
+| Row | Outcome |
+|---:|---|
+| 43 | REVERTED. The prologue forces `bk = K` and the tile costs 0.543x |
+| 46 | KEPT. **1.060x FLOP-weighted** |
+| 37 | KEPT. Shape 8 **1.040x**, and it needed no new kernel |
+| 44 | REVERTED. Built, correct, 0.969x |
+
+What remains in `OPTIMIZATIONS.md` is out of reach rather than untried:
+
+- **16** quantization cannot pass `atol = 0.002`. Row 13 measured that even
+  float16 fails.
+- **21** MLX never calls its own `bd192` and `bd256` kernels, and Python
+  cannot reach around it. Recheck after an MLX upgrade.
+- **19, 22** apply to no appendix shape.
+
+So the next real move is not another row. It is one of:
+
+1. Re-measure the roofline and look for a stage that moved. Rows 46 and 37
+   changed the block, and layer 1 of this loop reads that table.
+2. Fix `PROVISIONAL_PEAK_TFLOPS` in `flops.py`. Every MFU number scales with
+   a constant that was asserted from memory and never checked. The graded
+   score depends on it.
+
+Item 2 is the larger one. The MFU is the graded metric and its denominator
+is currently unverified.
+
 ### The state at the end of turn 4
 
 No model code has changed. Four turns of the loop produced four measured
