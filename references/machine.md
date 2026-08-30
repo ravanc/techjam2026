@@ -168,15 +168,37 @@ memory-bound. Check the arithmetic intensity before you rewrite it.
 
 ## The kernel launch floor
 
-One `mx.eval()` + `mx.synchronize()` round trip costs **0.15 to 0.32 ms**,
+One `mx.eval()` + `mx.synchronize()` round trip costs **0.12 to 0.41 ms**,
 and it includes the CPU graph build of one small operation. Extra kernels
-inside one `eval` cost about 0.004 ms each, so the round trip dominates.
+inside one `eval` cost about **0.0016 ms** each, so the round trip dominates.
+
+**An earlier version of this section said 0.004 ms for the extra kernel.
+That is 2.5x too high.** Measured 31 August 2026 by a slope, not by a
+single reading: queue K copies of a 1024-float elementwise operation into
+one `eval`, sweep K over 1, 2, 4, 8, 16, 32, 64, and fit a line. The whole
+sweep spans 0.1553 to 0.3211 ms, so 64 extra kernels cost less than one
+round trip. The fitted slope is **1.55 us for each kernel**. The same
+script gives the pure GPU cost of a real GEMM the same way, with no floor
+to subtract:
+
+| operation | slope, GPU ms per call | rate |
+|---|---:|---:|
+| elementwise, 1024 floats | 0.0016 | dispatch only |
+| addmm 8192 x 128 x 128 | 0.0657 | 4.08 TFLOP/s |
+| addmm 65536 x 128 x 128 | 0.6291 | 3.41 TFLOP/s |
+| addmm 131072 x 128 x 128 | 1.2616 | 3.40 TFLOP/s |
+
+So dispatch is 2.4% of the smallest real GEMM in the model and 0.12% of
+the largest. **The forward pass launches 29 kernels for each chunk**, which
+is 0.045 ms of dispatch: 0.10% of a shape 6 chunk.
 
 **The floor is not a constant. It tracks the CPU load.** Three runs of
 `stage_roofline.py` on 30 August 2026, minutes apart, measured 0.3049,
-0.1468 and 0.3214 ms, while `mysqld` held 96% of one CPU. The round trip is
-CPU-side work, so a busy machine raises it. Measure it in the same run that
-uses it, and never carry a floor from an earlier run.
+0.1468 and 0.3214 ms, while `mysqld` held 96% of one CPU. A run on 31
+August 2026 measured 0.4122 ms with a screen saver holding the GPU, and
+0.1250 ms once it stopped. The round trip is CPU-side work, so a busy
+machine raises it. Measure it in the same run that uses it, and never
+carry a floor from an earlier run.
 
 Subtract this floor from any timing of a single operation. At shape 2 the
 whole model is 0.75 ms, which is four round trips, so every stage of that

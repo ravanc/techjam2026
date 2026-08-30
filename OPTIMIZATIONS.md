@@ -51,10 +51,10 @@ Status:
 | 30 | Flatten the block to rank 2 before each projection | **REVERTED** | — | — | 0.992x to 1.000x against rank 3, on 4 projection sizes. MLX already collapses a rank 3 by rank 2 matmul into one GEMM |
 | 31 | Single-pass LayerNorm kernel for a narrow row | **KEPT** | `fast_layernorm.py`, chosen at `_mlx_transformer()` L570, gated at `plan_kernels()` L465 | `d_model < 256`, float32. Shapes 1-7 and 9-13. Shape 8 keeps MLX | **1.205x FLOP-weighted** (MLX 1298.3 ms to 1077.6 ms over the 13 shapes). Shape 7 **3.41x**, shape 10 1.42x, shape 9 1.41x, shape 6 **1.23x**, shape 13 1.17x. Shape 8 1.00x, so the gate is correct. All 13 shapes PASS, `max_abs` 9.5e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 32 | Give the attention kernel contiguous q, k and v | **REVERTED** | — | — | 1.02x, inside the noise floor: the `mx.contiguous` costs 3.29 ms and saves 3.41 ms. **Row 34 supersedes it and inverts it.** The 3.41 ms was never the read pattern. It was a hidden copy that `ensure_row_contiguous=True` ran inside the kernel launch. Do not make q, k and v contiguous. Tell the kernel their strides. This row also mislabelled its own measurement: see the detail section |
-| 33 | Fold GELU into the FFN matmul epilogue | **KEPT** | `steel_gemm.py` `steel_addmm()` L378, tile at `choose_tile()` L284; gated at `plan_kernels()` L508; used at `_mlx_transformer()` L734 | float32, `ffn_in` only, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13. Shape 2 keeps the MLX pair | **1.064x FLOP-weighted** (MLX 768.6 ms to 722.3 ms over the 13 shapes). Shape 6 **1.082x**, shape 3 1.068x, shape 5 1.042x, shape 7 1.042x, shape 13 1.030x, shape 8 1.009x. At the `ffn_in` stage alone: shape 7 **4.49x**, shape 6 1.51x, shape 13 1.47x. **Row 40 attributes that 1.51x: it is the epilogue, not the tile.** `steel_addmm(gelu=False)` ties `mx.addmm` on the same GEMM. Control: MPS held at 1.005x across the two sweeps. All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. 18/18 padding cases pass |
+| 33 | Fold GELU into the FFN matmul epilogue | **KEPT** | `steel_gemm.py` `steel_addmm()` L833, tile at `choose_tile()` L679; gated at `plan_kernels()` L508; used at `_mlx_transformer()` L734 | float32, `ffn_in` only, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13. Shape 2 keeps the MLX pair | **1.064x FLOP-weighted** (MLX 768.6 ms to 722.3 ms over the 13 shapes). Shape 6 **1.082x**, shape 3 1.068x, shape 5 1.042x, shape 7 1.042x, shape 13 1.030x, shape 8 1.009x. At the `ffn_in` stage alone: shape 7 **4.49x**, shape 6 1.51x, shape 13 1.47x. **Row 40 attributes that 1.51x: it is the epilogue, not the tile.** `steel_addmm(gelu=False)` ties `mx.addmm` on the same GEMM. Control: MPS held at 1.005x across the two sweeps. All 13 shapes PASS, `max_abs` 1.07e-06 to 2.62e-06. 18/18 padding cases pass |
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
-| 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
+| 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L220; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
 | 37 | Defer the residual biases on shape 8, by adding the carry once before the final LayerNorm | **KEPT** | the gate at `plan_kernels()` `use_defer_bias`; the add at `_mlx_transformer()` `norm()` | float32, unpadded, and both `ln1` and `ln2` folded by row 46. **Shape 8** |  **shape 8 1.042x** (MLX 124.911 ms to 119.931 ms), against a **clean 0.996x MPS control on the same shape**. An isolated single-shape run gave 1.044x, so the two agree. Worth about **0.7% FLOP-weighted**: 4.98 ms of the 681.4 ms total. The wide `fast_layernorm` this row originally proposed was NOT built, and it is not needed. **What this row became.** It was "a wide `fast_layernorm`, so shape 8 reaches row 36". Row 46 replaced the need for that. Row 36 needed a `pre_bias` hook on every LayerNorm, and only `fast_layernorm` had one, so shape 8 (`d_model` 1024) could not defer. Row 46 folds `ln1` and `ln2` into the GEMM below them and carries the bias in its `c3` constant, so neither needs a hook. Only the FINAL LayerNorm still does, and it has no GEMM below it. So the fix is one `x = x + carry` before that single call: **one pass over the activation for the whole model, against two deferred residual adds in every layer**. No new kernel. An earlier note here said it would. That was wrong: row 46 removes the need for a `pre_bias` hook at `ln1` and `ln2`, because the carry goes into its `c3` constant, but the FINAL LayerNorm still has no GEMM below it and still needs the carry. So shape 8 runs row 46 with `defer_bias=False` today. **The cheap fix is not this row at all**: add `x = x + carry` once before the final norm, which is ONE elementwise pass for the whole model instead of two for each layer. Measure that before building a wide `fast_layernorm`. The rest of this row still stands: Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.53 ms of the 32.51 ms layer, or 4.7%**, so about **1.0% FLOP-weighted**. Measured directly after row 36: the two residual adds are 0.785 ms and 0.834 ms, and the C operand would cost 0.043 ms each. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
 | 38 | Retune the steel attention block shape (`bq`, `bk`, `wm`) against the MFA parameter table | **REVERTED** | — | — | the default `bq=32, bk=32, wm=4` is best on every steel shape. The best other config anywhere is **1.002x** (shape 13), inside the 1% noise floor. MFA's own `bq=16` gives 1.000x, 0.956x, 0.929x, 0.824x and 0.895x on the five cases |
 | 39 | Shift the edge block in the steel GEMM, so an unaligned tile stays branch free | **RULED OUT** | — | — | nothing to unlock. `choose_tile()` never returns `None` on any appendix shape: every M, N and K is a power of two, and at least two tiles divide all 13. Shape 2 loses the fused GELU to the `rows >= 512` gate, not to divisibility |
@@ -64,9 +64,14 @@ Status:
 | 43 | Fold the LayerNorm into the prologue of the following GEMM | **REVERTED** | — | float32, `fast_layernorm` shapes with a large activation. Shape 6 above all | the prize is real and re-measured: `ln1` and `ln2` are **1.914 ms of a 13.634 ms shape 6 layer (14.0%)**, and no better LayerNorm kernel can win them, because `fast_layernorm` already runs at copy speed. Only fewer bytes can. **Route 1 (recompute the statistics inside the tile) is measured DEAD.** It needs one A tile to cover a whole row, so `bk = K = 128`, and the 32 KiB threadgroup then caps the tile at `bm + bn <= 62` against `bm32 bn64` today. Every one of the 24 tiles that compiles is bit exact (`max_abs` 0.00e+00) and **at best 0.543x**: `qkv proj` 3.602 -> 6.637 ms and `ffn_in` 1.345 -> 2.467 ms, so route 1 ADDS 4.157 ms to save 1.914 ms. The prize is real, so it moves to **row 46**, which reaches it without a prologue |
 | 44 | Chain `ffn_in` and `ffn_out` into one kernel | **REVERTED** | `profiling/chain_probe.py`, not in the model | — | built, correct, and it LOSES. Best of 40 configurations is **0.969x**, and a repeat run gave 0.960x. The chain deletes the 128 MiB `hidden` round trip, worth about 1.1 ms, but one threadgroup must own all of `ffn_dim` to hold the row, and the threadgroup memory that costs takes more than the round trip gives. Controlled pair at `bm = 32`: `bk8` uses 24.0 KiB and reaches 0.996x, `bk16` uses 29.0 KiB and reaches 0.896x — same tile, more threadgroup, worse time. Relative error 3e-07, so it is correct, just slower |
 | 45 | Build the deferred bias `carry` at weight build time | **OPEN** | partly delivered: `TorchToMLX` weight build L984-L1000 folds the carry into row 46's `ln1c3`/`ln2c3` | what remains is the run-time accumulation at `_mlx_transformer()` L821 and L849, which serves the final LayerNorm and any shape that declines row 46 (shape 2) | not measured, and a sweep CANNOT measure it. It is 2 kernels for each layer on a `(d_model,)` vector, so about 8 launches of 0.004 ms each for the whole forward. That is about **0.1% FLOP-weighted**, under the 1% noise floor. Worth doing for shape 2 alone, and shape 2 carries 0.0% of the FLOP weight |
-| 46 | Absorb the LayerNorm into the weights, and apply it in the GEMM epilogue | **KEPT** | `fast_layernorm.py` `layer_norm_stats()` L205; `steel_gemm.py` `layer_norm_constants()` L610 and the `apply_layer_norm_epilogue` patch at L85; gated at `plan_kernels()`; used at `_mlx_transformer()` | float32, unpadded, no padded head, rows >= 512, and a tile that divides M, N and K. **Shapes 1 and 3-13, shape 8 included.** Shape 2 keeps the plain path | **1.060x FLOP-weighted** (MLX 722.3 ms to 681.4 ms over the 13 shapes). Shape 6 **1.073x**, shape 12 1.152x, shape 4 1.139x, shape 3 1.103x, shape 13 1.057x, shape 8 1.012x. Two controls: MPS held at **0.992x** across the two sweeps, and shape 2, which declines this row, moved 0.974x on MLX while its own MPS control moved 0.919x, so that is machine noise on a 0.65 ms shape and not a regression. All 13 shapes PASS, `max_abs` 1.07e-06 to 3.34e-06. 18/18 padding cases pass. It supersedes row 43. It supersedes row 43, which tried the same prize with a prologue and lost the tile. A LayerNorm is affine in the row, so it distributes through the matmul that follows it and folds into three constants built at weight build time. What is left at run time is one GEMM over RAW `x` and an epilogue that reads two floats for the row, so **the LayerNorm never writes an activation**. Worth about **1.0 ms per shape 6 layer, or 7.2%**: it replaces `ln1` and `ln2` (1.914 ms) with two statistics passes (about 0.92 ms). **The accuracy risk is measured and it passes**: 0.9x to 1.2x of the error the model already carries, on shapes 6, 7, 8 and 13, by `profiling/ln_absorb_probe.py`. Unlike row 43 it has no `d_model < 256` gate, so it reaches shape 8 (21.3% of the FLOP weight) and it subsumes row 37 |
+| 46 | Absorb the LayerNorm into the weights, and apply it in the GEMM epilogue | **KEPT** | `fast_layernorm.py` `layer_norm_stats()` L305; `steel_gemm.py` `layer_norm_constants()` L1173 and the `apply_layer_norm_epilogue` patch at L136; gated at `plan_kernels()`; used at `_mlx_transformer()` | float32, unpadded, no padded head, rows >= 512, and a tile that divides M, N and K. **Shapes 1 and 3-13, shape 8 included.** Shape 2 keeps the plain path | **1.060x FLOP-weighted** (MLX 722.3 ms to 681.4 ms over the 13 shapes). Shape 6 **1.073x**, shape 12 1.152x, shape 4 1.139x, shape 3 1.103x, shape 13 1.057x, shape 8 1.012x. Two controls: MPS held at **0.992x** across the two sweeps, and shape 2, which declines this row, moved 0.974x on MLX while its own MPS control moved 0.919x, so that is machine noise on a 0.65 ms shape and not a regression. All 13 shapes PASS, `max_abs` 1.07e-06 to 3.34e-06. 18/18 padding cases pass. It supersedes row 43. It supersedes row 43, which tried the same prize with a prologue and lost the tile. A LayerNorm is affine in the row, so it distributes through the matmul that follows it and folds into three constants built at weight build time. What is left at run time is one GEMM over RAW `x` and an epilogue that reads two floats for the row, so **the LayerNorm never writes an activation**. Worth about **1.0 ms per shape 6 layer, or 7.2%**: it replaces `ln1` and `ln2` (1.914 ms) with two statistics passes (about 0.92 ms). **The accuracy risk is measured and it passes**: 0.9x to 1.2x of the error the model already carries, on shapes 6, 7, 8 and 13, by `profiling/ln_absorb_probe.py`. Unlike row 43 it has no `d_model < 256` gate, so it reaches shape 8 (21.3% of the FLOP weight) and it subsumes row 37 |
 | 48 | Hide the framework boundary behind the GPU, by pipelining the chunk loop | **REVERTED** | `profiling/pipeline_probe.py`, not in the model | — | built, correct, and it LOSES: **0.974x**. Unified memory means the CPU copy and the GPU kernels contend for one memory system, so the copy does not hide. An unrelated 625 MiB CPU memcpy costs 31.40 ms alone and **+45.06 ms inside the loop**, so overlapping is WORSE than serial. A second run gave 34.53 ms alone and +31.31 ms inside, 91% unhidden. A lagged eval with the bulk convert kept gives 1.004x, inside the noise floor. **This rules out the whole class of transfer-overlap ideas on this machine.** The boundary is real (5.4% of shape 6, about 4.5% FLOP-weighted) but it is not recoverable this way |
 | 47 | Produce the LayerNorm statistics in the epilogue of the GEMM that writes the activation | **KEPT** | `steel_gemm.py` `_ROW_STATS_EPILOGUE` and `row_stats_reduce()`; gated at `plan_kernels()` `fuse_stats_out` and `fuse_stats_ffn`; used at `_mlx_transformer()` | float32, unpadded, `use_defer_bias`, rows >= 512, and a tile that divides M, N and K. Shapes 1 and 3-13, shape 8 included. Shape 2 keeps the plain path | **1.075x FLOP-weighted** (MLX 686.6 ms to 638.7 ms over the 13 shapes). Shape 6 **1.091x**, shape 3 1.098x, shape 7 1.089x, shape 5 1.081x, shape 11 1.067x, shape 13 1.045x, shape 8 1.027x. Control: MPS held at a 1.006x median across the two sweeps, and shape 6's own MPS moved 0.970x, so the machine was if anything slower. Shape 12 read 0.922x in the sweep; a controlled interleaved A/B says **1.008x to 1.013x**, so that reading was machine drift and not a regression. All 13 shapes PASS, `max_abs` 1.19e-06 to 3.46e-06. 18/18 padding cases bit exact |
+| 49 | Block the head dimension of K and V, so `head_dim = 256` fits the threadgroup | **REVERTED** | `profiling/d_outer_attention.py` and `profiling/d_outer_probe.py`, not in the model | — | built, correct on **26 of 26** block shapes (`max_abs` 1.31e-06 to 1.55e-06), and every one LOSES. Best is `bq16 bk8 bdc64` at **0.832x**, which is worse than row 41's **0.904x** for the same `bq16 bk8` block with no D block. **The premise is wrong**: row 41 read `BK = 8` as the handicap, and this row removed the threadgroup limit that forced it. A larger `BK` then made it slower, not faster. Every `bk8` config beats every `bk32` config at the same `bq`. The stage is IO bound, and `BK` does not change the bytes |
+
+| 50 | Apply the FINAL LayerNorm in the epilogue of the GEMM above it | **KEPT** | `steel_gemm.py` `_FINAL_LN_EPILOGUE` L298 and `choose_final_ln_tile()` L714; gated at `plan_kernels()` L633; used at `_mlx_transformer()` L856 | float32, unpadded, and a full row tile (`bn == d_model`, `wn == 1`) that fits the threadgroup AND has exact loader geometry, which holds for `d_model` in {8, 16, 32, 64, 128}. **Shapes 1-7 and 9-13.** Shape 8 cannot: `bn = 1024` needs 80 KiB | **1.019x FLOP-weighted** by a controlled A/B on all 13 shapes (`profiling/plan_ab.py`), and 1.011x from the two sweeps (MLX 635.2 ms to 628.8 ms). Shape 6 **1.0211x** with no overlap between the two distributions (OFF min 441.06 ms, ON max 436.36 ms), shape 11 1.0315x, shape 7 1.0195x, shape 5 1.0180x, shape 9 1.0134x, shape 1 1.0128x, shape 13 1.0117x, shape 12 1.0117x. **Shape 8 is the null control**: it takes no tile, so both sides run identical code, and it reads 0.9911x, 1.0027x and 0.9994x over three runs. That is the noise floor of the A/B. **Every one of the 13 shapes ran the A/B three times.** Shape 6 repeats at 1.0211x, 1.0210x and 1.0202x, a 0.09 pp spread, while its own OFF median drifted 2.8%. Every shape that takes the row has a median above 1.010x, and only 3 of the 39 readings fall below 1.000x (two are the null control). Take the WORST of three runs on every shape at once and it is still **1.0185x FLOP-weighted**. MPS held at a **1.000x median** across the two sweeps. No shape loses: the lowest is shape 3 at 0.9994x. At the GEMM alone the fusion is **1.399x** at the shape 6 chunk and 1.412x at shape 13 (`profiling/final_ln_probe.py`). All 13 shapes PASS, `max_abs` 1.43e-06 to 2.38e-06. 18/18 padding cases pass. **Rows 37, 45, 46 and 47 each named this LayerNorm as the one that stays, and none of them measured it.** Every one asked whether a GEMM sits BELOW it, which is what row 46 needs, and the answer is no. The GEMM ABOVE it works instead |
+
+| 51 | Refuse a steel tile whose block loader has inexact thread geometry | **KEPT** (a bug fix) | `steel_gemm.py` `_loader_ok()` and `loader_geometry_ok()` L689; applied in `choose_tile()`, `choose_final_ln_tile()` and `steel_addmm()` | every steel GEMM. It changes NO appendix plan: all 13 are identical before and after | found while building row 50. MLX's `BlockLoader` derives `n_reads`, `TCOLS` and `TROWS` by TRUNCATING integer division with no guard, so a tile it never dispatches gives a **silently wrong answer**. Measured on a plain GEMM with no epilogue (M=1024 K=128, `bm32 bk16`, 128 threads): `BN` 32, 64 and 128 give `max_abs` **0.00e+00**, while `BN` 48 and 96 give **5.2e+00**, and `BN` 160 does not compile (`TCOLS` is 0). At `BN = 96`: `n_reads = 12`, `TCOLS = 16 / 12 = 1`, `TROWS = 128`, so 128 threads load 128 rows of a 96 row tile. The predicate reproduces the measured set exactly: it admits {8, 16, 32, 64, 128} and rejects 24, 40, 48, 56, 72, 80, 88, 96, 104, 112, 120 and 160. It was latent before row 50, because `_TILES` holds only `bn` 32 and 64, and all four tiles pass. 84/84 configurations over 7 `d_model`, 3 `seq_len`, 2 batch and both causal settings now PASS |
 
 Line numbers are in `torch_transformer_benchmark.py`.
 
@@ -2951,3 +2956,430 @@ double buffering, a copy stream, a background thread doing `_to_mlx`,
 converting the next batch during the current one. They all move bytes through
 the one memory system that the kernels are already saturating. The 4.5% is
 real and it is not recoverable this way.
+
+
+## 49. Block the head dimension of K and V, so `head_dim = 256` fits the threadgroup — REVERTED
+
+Built as a prototype, correct on every block shape, and it loses on every
+block shape. It closes the last open route to a fused attention kernel at
+`head_dim = 256`, which is what shape 8 runs.
+
+### The threadgroup limit is real, and it is 32 KiB
+
+Rows 26 and 41 both assert a 32 KiB threadgroup. Neither measured it. It is
+measured now, and they are right. `profiling/tg_limit.py` compiles a kernel
+that declares a threadgroup array of a given size:
+
+| asked | result |
+|---:|---|
+| 16 KiB | loads and runs |
+| 32 KiB | loads and runs |
+| 33 KiB | `[metal::Device] Unable to load kernel` |
+| 40, 48, 64, 96 KiB | same failure |
+
+MLX does not report the limit: `mx.device_info()` gives the device name, the
+architecture and three memory sizes, and no threadgroup field. Metal reports
+it as `MTLDevice.maxThreadgroupMemoryLength`, which no MLX Python binding
+exposes. So the probe is how this project reads it. See
+`references/machine.md`.
+
+### What was built
+
+Apple's kernel puts both operand buffers in the threadgroup at the full head
+width, so a wide head does not fit:
+
+    Q_smem  = BQ * (BD + 4)                      = 32.5 KiB at BQ 32, BD 256
+    KV_smem = max((BK + 4) * BD, BK * (BD + 4))  = 36.0 KiB at BK 32, BD 256
+
+Row 41 shrank `BK` to 8 to fit, and read the result as a handicap: "at
+`BD=256` with `BK=8` the kernel runs 16 K block iterations ... The
+threadgroup traffic per unit of work is what kills it."
+
+This row removes that constraint instead of accepting it. It blocks the head
+dimension of K and V, and keeps Q whole:
+
+    S = Q @ K.T   sums over D, so it accumulates over D chunks.
+    O[:, d] += P @ V[:, d]   is independent for each D chunk.
+
+    for each K block:
+        S = 0
+        for each D chunk:  load K[:, chunk],  S += Q[:, chunk] @ K[:, chunk].T
+        softmax(S) -> P            <- needs the whole row of S, and has it
+        rescale O by the online factor
+        for each D chunk:  load V[:, chunk],  O[:, chunk] += P @ V[:, chunk]
+
+    Q_smem  = BQ * (BD + 4)                        = 16.25 KiB at BQ 16
+    KV_smem = max((BK + 4) * BDC, BK * (BDC + 4))  =  9.00 KiB at BK 32, BDC 64
+
+That is 25.25 KiB, and `BK` is free to be 32 or 64 again. The FLOPs and the
+DRAM traffic do not change: it reads Q, K and V once each, as Apple's kernel
+does. It costs two extra threadgroup barriers for each D chunk, and Q whole
+in the threadgroup caps `BQ` at 16, so the threadgroup holds two simdgroups.
+
+This is NOT the `d_outer` of `metal-flash-attention` that row 41 describes.
+That one blocks the D axis of the O accumulator and spills O to device
+memory on purpose. This one keeps O in registers and blocks the operands, so
+there is no spill.
+
+### The measurement
+
+Shape 8 attention, B64 H4 S128 `head_dim` 256, causal, float32. Three
+interleaved rounds of 40 repeats, median of rounds, each call bracketed by
+`mx.eval` and `mx.synchronize`:
+
+    .venv/bin/python3 profiling/d_outer_probe.py --repeats 40 --rounds 3
+
+Every one of the 26 fitting block shapes is correct, `max_abs` 1.31e-06 to
+1.55e-06 against `mx.fast.scaled_dot_product_attention`. The best of each
+`bk`, against the 2.59 ms MLX fallback:
+
+| bq | bk | bdc | ms | speedup |
+|---:|---:|---:|---:|---:|
+| 16 | 8 | 64 | 3.0709 | **0.832x** |
+| 16 | 16 | 128 | 3.2325 | 0.800x |
+| 8 | 8 | 64 | 3.3865 | 0.745x |
+| 16 | 32 | 32 | 4.0708 | 0.640x |
+| 16 | 64 | 32 | 4.5986 | 0.550x |
+
+**Row 41 is still the best result at this head width, at 0.904x, and it does
+not block D.**
+
+### Why the premise was wrong
+
+Row 41 read `BK = 8` as the handicap. It is not. The sweep holds `bq` fixed
+and moves `bk`, and a larger `BK` is always slower:
+
+| bq | bk8 | bk16 | bk32 | bk64 |
+|---:|---:|---:|---:|---:|
+| 16 | **0.832x** | 0.800x | 0.640x | 0.550x |
+| 8 | **0.745x** | 0.654x | 0.495x | — |
+
+So the thing this row was built to buy is a thing the kernel does not want.
+The reason is in the roofline, and row 41 already recorded it without
+drawing this conclusion: the stage runs at 40% of the bandwidth roof and 20%
+of the matmul roof, so it is IO bound. `BK` sets the loop count and the
+threadgroup traffic. It does not change the bytes that cross DRAM. Raising
+it spends more threadgroup memory, which lowers occupancy on a kernel that
+already holds only two simdgroups.
+
+### What this closes
+
+Rows 21, 26 and 41 leave one open route: reach a fused kernel at
+`head_dim = 256`. Three approaches are now measured, and all three lose.
+
+| approach | best | row |
+|---|---:|---:|
+| narrow `BK` to fit the full head | 0.904x | 41 |
+| block the head dimension of K and V | 0.832x | 49 |
+| `bk8` guess, never measured | — | 26 |
+
+The prize was about 1.2% of the weighted score, from a `sdpa` stage of
+2.651 ms against a 1.049 ms byte floor. **Do not try a fourth approach
+without a new reason.** The stage is IO bound at `S = 128`, its score
+matrix is 16 MiB and never reaches DRAM (`sdpa peak memory: 80.0 MiB`
+against 128.0 MiB for the operands alone), so the prize row 25 won at shape
+6 does not exist here.
+
+## 50. Apply the final LayerNorm in the epilogue of the GEMM above it — KEPT
+
+Row 46 folds a LayerNorm into the GEMM **below** it. The final LayerNorm has
+no GEMM below it. Rows 37, 45, 46 and 47 each said so, and each moved on:
+
+- row 37: "Only the FINAL LayerNorm still does, and it has no GEMM below it."
+- row 45: "the final LayerNorm, which has no GEMM below it".
+- row 47: "The last `ffn_out`. The only LayerNorm below it is the final one,
+  which is a plain LayerNorm with no GEMM under it. So it takes no
+  statistics."
+
+**None of them measured what it costs.** Measured now, at the shape 6 chunk
+width (M = 131072, d_model = 128):
+
+    .venv/bin/python3 profiling/final_ln_probe.py
+
+| what | time | rate |
+|---|---:|---:|
+| `fast_layernorm.layer_norm(x, w, b, eps, pre_bias=carry)` | 1.2478 ms | 100.2 GB/s |
+
+That is 12.5 ms of the 452 ms shape 6, or **2.8% of the shape**. It runs at
+the memory roof, so no better LayerNorm kernel can win it. Only fewer bytes
+can, and row 46's own argument says how: the value was in registers one stage
+earlier.
+
+### The GEMM above, not the GEMM below
+
+The activation the final LayerNorm reads is written by the `ffn_out` of the
+**last layer**. That GEMM holds the value in its accumulator at the store. So
+the LayerNorm runs there, and the activation never makes a second round trip.
+
+### Why nobody could do this before
+
+To centre a row, the tile must own the **whole** row. Row 47 could take only
+the raw sums for exactly this reason: a threadgroup owns a `bn` wide piece.
+
+So this epilogue needs a **full row tile**: `bn == N`, and `wn == 1` as well,
+so that one simdgroup owns the row and the two `simd_shuffle_xor` steps of
+row 47 reduce all of it. `simd_shuffle_xor` is a butterfly, so all four lanes
+of a fragment row end with the total. No leader lane, no threadgroup memory
+and no barrier.
+
+A full row tile looked expensive, and the `_TILES` comment said so: `bm64
+bn128` measured 1.907 ms against 1.527 ms for `bm32 bn64`, a 1.25x loss.
+**That measurement is on `ffn_in`**, which has a vector bias and a GELU and is
+compute bound. `ffn_out` takes the residual as a **matrix C**, which makes it
+IO bound, and there the tile shape does not matter. Measured at the same M, K
+and N with a matrix C, 40 repeats:
+
+| tile | time |
+|---|---:|
+| bm32 bn64 | 1.8055 ms |
+| bm32 bn128 | 1.8074 ms |
+| bm64 bn128 | 1.8048 ms |
+
+The comment in `steel_gemm.py` now carries both measurements.
+
+### The kernel
+
+`_FINAL_LN_EPILOGUE` is a third method on `BlockMMA`, beside row 46's
+`apply_layer_norm_epilogue` and row 47's `write_row_stats`. It reuses the
+pointer slots of those two rows, which `ffn_out` never uses: `lnc1` carries
+the LayerNorm gain, `lnc2` the LayerNorm bias, and `rowcarry` the deferred
+residual bias of row 36. So the kernel needs no new argument.
+
+It makes two passes over the accumulator: one to sum, one to apply. The
+variance is the UNCENTRED form, as row 47 uses, and
+`profiling/ln_tiled_stats_probe.py` measures that this model stays far below
+the cancellation regime.
+
+`wm2` does not compile at `bn = 128`: 64 threads cannot load that threadgroup
+tile. `bm32 wm4` is the best of the six configurations that do build, at every
+size measured.
+
+### The GEMM alone
+
+`profiling/final_ln_probe.py`, interleaved, median of 60:
+
+| shape | M | N | today | fused | ratio |
+|---|---:|---:|---:|---:|---:|
+| 6, one chunk | 131072 | 128 | 2.8549 ms | 2.0411 ms | **1.399x** |
+| 13 | 65536 | 128 | 1.5226 ms | 1.0787 ms | **1.412x** |
+| 5 | 16384 | 128 | 0.5004 ms | 0.4139 ms | 1.209x |
+| 7 | 8192 | 32 | 0.1868 ms | 0.1661 ms | 1.124x |
+| 1 | 8192 | 128 | 0.3252 ms | 0.3024 ms | 1.075x |
+| 12 | 2048 | 128 | 0.1815 ms | 0.1731 ms | 1.049x |
+| 8 | 8192 | 1024 | — | — | no full row tile fits |
+
+`max_abs` against the two kernel form is 1.43e-06 to 1.91e-06 on every row.
+
+**Measure this interleaved.** A first version of the probe timed each side in
+its own block and ran the big case first. It read **0.534x** at M = 8192 where
+the interleaved A/B reads 1.075x. The allocator state that the big case left
+behind moved a 0.3 ms reading by 2x. The file now alternates the order each
+round.
+
+### Where it does not apply
+
+- **Shape 8.** `bn = N = 1024` puts `1024 * (16 + 4)` floats in the
+  threadgroup, which is 80 KiB against the 32 KiB limit.
+  `choose_final_ln_tile()` returns None, and shape 8 keeps the separate final
+  LayerNorm. Shape 8 is 21.3% of the FLOP weight, so about a fifth of the
+  score cannot take this row.
+- **A padded batch.** The block clears the padded rows between the GEMM and
+  the LayerNorm, so the epilogue would normalize the wrong value.
+- **float16 and bfloat16.** The hoisted kernel is compiled for float32.
+
+It does NOT need `defer_bias`. When the block defers, `carry` holds the whole
+accumulated bias. When it does not, the projection bias `fob` is the whole
+carry, and the epilogue adds it the same way.
+
+### The controlled A/B
+
+`plan_ab.py` builds the same model twice in one process and toggles
+`final_ln`, alternating the order each round:
+
+    .venv/bin/python3 profiling/plan_ab.py --cases 6 --repeats 8 --rounds 5
+    .venv/bin/python3 profiling/plan_ab.py --cases 13,8,5,1,12 --repeats 30 --rounds 5
+    .venv/bin/python3 profiling/plan_ab.py --cases 2,3,7,9,10,11,4 --repeats 60 --rounds 5
+
+| shape | FLOP share | OFF | ON | ratio |
+|---:|---:|---:|---:|---:|
+| 6 | 66.5% | 442.4843 ms | 433.3615 ms | **1.0211x** |
+| 8 | 21.3% | 116.4064 ms | 117.4550 ms | 0.9911x (null control) |
+| 13 | 9.4% | 38.0368 ms | 37.5969 ms | 1.0117x |
+| 5 | 0.9% | 6.1024 ms | 5.9947 ms | 1.0180x |
+| 1 | 0.4% | 3.3741 ms | 3.3315 ms | 1.0128x |
+| 9 | 0.4% | 3.5631 ms | 3.5159 ms | 1.0134x |
+| 10 | 0.4% | 3.4499 ms | 3.4018 ms | 1.0142x |
+| 11 | 0.4% | 3.4855 ms | 3.3789 ms | 1.0315x |
+| 4 | 0.1% | 1.1989 ms | 1.1875 ms | 1.0095x |
+| 12 | 0.1% | 1.2476 ms | 1.2331 ms | 1.0117x |
+| 7 | 0.0% | 1.1080 ms | 1.0869 ms | 1.0195x |
+| 3 | 0.0% | 0.7279 ms | 0.7283 ms | 0.9994x |
+| 2 | 0.0% | 0.6400 ms | 0.6093 ms | 1.0505x |
+
+**FLOP-weighted: 1.019x.**
+
+### Repeated, to separate it from the noise
+
+The A/B above ran once. **Every one of the 13 shapes then ran it twice more**,
+on separate invocations:
+
+    .venv/bin/python3 profiling/plan_ab.py --cases 6,8,13 --repeats 8 --rounds 7
+    .venv/bin/python3 profiling/plan_ab.py --cases 1,2,3,4,5,7,9,10,11,12 --repeats 60 --rounds 7
+
+| shape | weight | run 1 | run 2 | run 3 | median | worst | spread |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 6 | 66.5% | 1.0211x | 1.0210x | 1.0202x | **1.0210x** | 1.0202x | **0.09 pp** |
+| 8 | 21.3% | 0.9911x | 1.0027x | 0.9994x | 0.9994x | 0.9911x | 1.16 pp |
+| 13 | 9.4% | 1.0117x | 1.0080x | 1.0085x | 1.0085x | 1.0080x | 0.37 pp |
+| 5 | 0.9% | 1.0180x | 1.0158x | 1.0187x | 1.0180x | 1.0158x | 0.29 pp |
+| 1 | 0.4% | 1.0128x | 1.0006x | 1.0151x | 1.0128x | 1.0006x | 1.45 pp |
+| 9 | 0.4% | 1.0134x | 1.0104x | 1.0118x | 1.0118x | 1.0104x | 0.30 pp |
+| 10 | 0.4% | 1.0142x | 1.0134x | 1.0104x | 1.0134x | 1.0104x | 0.38 pp |
+| 11 | 0.4% | 1.0315x | 1.0126x | 1.0132x | 1.0132x | 1.0126x | 1.89 pp |
+| 4 | 0.1% | 1.0095x | 1.0097x | 1.0102x | 1.0097x | 1.0095x | 0.07 pp |
+| 12 | 0.1% | 1.0117x | 1.0070x | 1.0123x | 1.0117x | 1.0070x | 0.53 pp |
+| 7 | 0.0% | 1.0195x | 1.0260x | 1.0205x | 1.0205x | 1.0195x | 0.65 pp |
+| 3 | 0.0% | 0.9994x | 1.0034x | 1.0168x | 1.0034x | 0.9994x | 1.74 pp |
+| 2 | 0.0% | 1.0505x | 1.0154x | 1.0335x | 1.0335x | 1.0154x | 3.51 pp |
+
+**Every one of the 12 shapes that takes the row has a median above 1.010x.**
+
+**Only 3 of the 39 readings fall below 1.000x, and two of them are the null
+control.** The third is shape 3 at 0.9994x, which is 0.06% on a 0.73 ms shape.
+No shape reads a loss in more than one of its three runs.
+
+**Shape 6 repeats to within 0.09 percentage points**, while the machine itself
+moved: its OFF median went 442.48, 454.86 and 450.68 ms over the three runs, a
+2.8% drift. The ratio does not follow the drift.
+
+**Shape 8 is the null control and it spreads 1.16 pp around 1.000x.** It takes
+no tile, so both sides run identical code. Its spread is 13x that of shape 6,
+which is the point: the interleaved A/B measures the change, not the machine,
+and the win on shape 6 is an order of magnitude steadier than the noise on a
+shape that has no win to measure.
+
+The FLOP-weighted figure barely moves, whichever of the three runs you take:
+
+| pick | FLOP-weighted |
+|---|---:|
+| per-shape BEST of three | 1.0194x |
+| per-shape MEDIAN of three | **1.0192x** |
+| per-shape WORST of three | 1.0185x |
+
+**The row does not depend on a single reading.** Take the worst of three runs
+on every shape at once and it is still 1.0185x.
+
+Two things make this reading trustworthy:
+
+- **Shape 8 is a null control.** It takes no tile, so `final_ln=None` on both
+  sides and the two runs execute identical code. It reads 0.9911x, which is
+  the noise floor of this A/B: about 0.9%.
+- **Shape 6 does not overlap.** OFF spans 441.06 to 449.60 ms and ON spans
+  431.91 to 436.36 ms. The lowest OFF reading is above the highest ON reading.
+
+No shape loses. The lowest is shape 3 at 0.9994x, which is flat.
+
+### The sweep
+
+    .venv/bin/python3 scoreboard.py --cpu-cache --label "Row 50: apply the final LayerNorm in the last ffn_out epilogue"
+
+MLX 635.2 ms to 628.8 ms over the 13 shapes, **1.011x FLOP-weighted**, with
+MPS at a **1.000x median** across the two sweeps. The sweep and the A/B
+disagree by 0.8 percentage points, and the A/B is the better number: shape 6
+carries two thirds of the weight, and a 5 ms move on a 452 ms shape is inside
+what two sweeps minutes apart can produce. Both agree on the sign.
+
+### Accuracy
+
+All 13 shapes PASS, `max_abs` 1.43e-06 to 2.38e-06, which is the band the
+model already carried. `test_padding.py` gives 18/18 PASS, and every case is
+bit exact, because a padded batch declines this row.
+
+### What is left after it
+
+Shape 8 keeps its final LayerNorm, and it is 21.3% of the FLOP weight. To
+reach it the epilogue would need a row wider than one threadgroup tile, which
+is the same obstacle row 47 met and answered with a two-pass reduce. A
+two-pass form here would write the un-normalized activation, read it back,
+and normalize it, which is what the model does today.
+
+## 51. Refuse a steel tile whose block loader has inexact thread geometry — KEPT (a bug fix)
+
+Found while building row 50. It is not an optimization. It stops a wrong
+answer.
+
+### What MLX does
+
+`steel/gemm/loader.h` gives `BlockLoader` three DEFAULT TEMPLATE ARGUMENTS,
+and every one of them is a truncating integer division with no guard:
+
+    n_reads = (BCOLS * BROWS) / tgp_size
+    TCOLS   = BCOLS / n_reads
+    TROWS   = tgp_size / TCOLS
+
+Then `bi = thread_idx / TCOLS`, and the load loop steps `i` from 0 to `BROWS`
+by `TROWS`. The loader is correct only when the three divisions are exact and
+`TROWS` divides `BROWS`.
+
+Nothing in MLX checks this, and MLX does not need to: it instantiates only the
+tiles in its own dispatch table, and those all have exact geometry. This
+module compiles the same kernel at tiles MLX never ships, so it must check.
+
+### What goes wrong
+
+At `BN = 96`, `BK = 16` and 128 threads:
+
+    n_reads = (16 * 96) / 128 = 12
+    TCOLS   = 16 / 12        = 1     <- truncated from 1.33
+    TROWS   = 128 / 1        = 128
+
+The 128 threads then load 128 rows of a 96 row tile. The loader reads 32 rows
+past the operand and writes past the threadgroup buffer. No error is raised.
+
+At `BN = 160` the truncation gives `TCOLS = 0`, and the kernel fails to
+compile with "division by zero" in `utils.h`.
+
+### The measurement
+
+A plain GEMM, no epilogue, M=1024 K=128, `bm32 bk16`, against `mx.addmm`:
+
+| BN | `wm4 wn1` | `wm2 wn2` |
+|---:|---:|---:|
+| 32 | 0.00e+00 | 0.00e+00 |
+| 48 | **5.22e+00** | **5.04e+00** |
+| 64 | 0.00e+00 | 0.00e+00 |
+| 96 | **5.21e+00** | **5.29e+00** |
+| 128 | 0.00e+00 | 0.00e+00 |
+
+The error does not depend on `wn`, and it does not depend on the epilogue. It
+is the loader.
+
+`loader_geometry_ok()` repeats the three divisions and demands that each one
+is exact. It reproduces the measured set exactly: over `BN` from 8 to 296 in
+steps of 8, at `bm32 bk16 wm4 wn1`, it admits {8, 16, 32, 64, 128} and rejects
+every other value, including all of 24, 40, 48, 56, 72, 80, 88, 96, 104, 112
+and 120, which measured wrong, and 160, which does not compile.
+
+### Where it applies
+
+`choose_tile()` and `choose_final_ln_tile()` both skip a tile that fails it,
+and `steel_addmm()` raises rather than return a wrong answer.
+
+**It changes no appendix plan.** All four tiles in `_TILES` pass, for both
+`transpose_b` settings, so every one of the 13 shapes keeps the plan it had.
+That was checked by comparing `plan_kernels(...).describe()` against the plan
+recorded in the sweep, for all 13.
+
+### Why it was latent
+
+`_TILES` holds `bn` 32 and 64 only, and `choose_tile()` requires `n % bn == 0`.
+So no shape could reach a bad `bn` through it. Row 50 is the first caller that
+sets `bn = N` for an arbitrary N, and `d_model = 96` reached the bug at once:
+`max_abs` 9.37e-01 against the baseline, where the same model with row 50
+off gives 1.19e-06.
+
+### The regression test
+
+84 configurations, over `d_model` in {32, 48, 64, 96, 128, 192, 256},
+`seq_len` in {32, 96, 128}, batch in {8, 40} and both causal settings, against
+`BaselineTransformer`. All 84 PASS, `max_abs` 9.54e-07 to 1.43e-06.

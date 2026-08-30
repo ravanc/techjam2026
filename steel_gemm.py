@@ -255,6 +255,106 @@ _ROW_STATS_EPILOGUE = """
 """
 
 
+# The final LayerNorm epilogue of row 50. It is a third new method on
+# `BlockMMA`.
+#
+# Row 46 folds a LayerNorm into the GEMM BELOW it. The final LayerNorm has no
+# GEMM below it, so rows 37, 45, 46 and 47 all named it as the one that stays,
+# and none of them measured it. It costs 1.2478 ms for each shape 6 chunk, at
+# 100.2 GB/s, which is 2.8% of the shape.
+#
+# This method reaches it from the other side: the GEMM ABOVE it, which is the
+# `ffn_out` of the last layer. That GEMM already holds the value in registers
+# at the store, so the LayerNorm runs there and the activation never makes a
+# second round trip.
+#
+# THE OBSTACLE, AND THE ANSWER
+#
+# Row 47 could take only the raw sums, because a threadgroup owns a BN wide
+# piece of the row and cannot centre against a mean it does not have. To
+# APPLY the LayerNorm the tile must own the WHOLE row. So this epilogue needs
+# `bn == N`, and it needs `wn == 1` as well, so that one simdgroup owns the
+# row and the two `simd_shuffle_xor` steps of row 47 reduce all of it.
+#
+# A full row tile is not free in general: at the shape 6 `ffn_in` size it
+# costs 1.25x, because that GEMM is compute bound. It IS free on `ffn_out`,
+# which takes the residual as a matrix C and is IO bound. See `_TILES`.
+#
+# `simd_shuffle_xor` is a butterfly, so every one of the four lanes of a
+# fragment row ends with the total. No leader lane and no broadcast.
+#
+# The variance is the UNCENTRED form, as row 47 uses.
+# `profiling/ln_tiled_stats_probe.py` measures that this model stays far
+# below the cancellation regime.
+#
+# It reuses the pointer slots of rows 46 and 47, which are always free here:
+# `ffn_out` absorbs no LayerNorm and takes no statistics.
+#
+#     gain     `lnc1`, the (N,) LayerNorm gain
+#     lnbias   `lnc2`, the (N,) LayerNorm bias
+#     carry    `rowcarry`, the (N,) deferred residual bias of row 36
+#
+# It has NO bounds check, so the caller must use an aligned tile.
+_FINAL_LN_EPILOGUE = """
+  /* Final LayerNorm epilogue. Added by steel_gemm.py. See OPTIMIZATIONS.md
+     row 50. It needs BN == N and WN == 1, so that this simdgroup owns the
+     whole output row. */
+  METAL_FUNC void apply_final_layer_norm(
+      const device U* gain,
+      const device U* lnbias,
+      const device U* carry,
+      const U inv_d,
+      const U eps) thread {
+    gain += (sn);
+    lnbias += (sn);
+    carry += (sn);
+
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < TM; i++) {
+      U total = U(0);
+      U square = U(0);
+
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < TN; j++) {
+        thread auto& accum = Ctile.frag_at(i, j);
+        const int offset = j * TN_stride;
+
+        STEEL_PRAGMA_UNROLL
+        for (short k = 0; k < decltype(Ctile)::kElemsPerFrag; k++) {
+          const U v = accum[k] + carry[offset + k];
+          total += v;
+          square += v * v;
+        }
+      }
+
+      // The four lanes of one fragment row are lane ^ 1 and lane ^ 8. The
+      // xor shuffle is a butterfly, so all four end with the total.
+      total += simd_shuffle_xor(total, 1);
+      total += simd_shuffle_xor(total, 8);
+      square += simd_shuffle_xor(square, 1);
+      square += simd_shuffle_xor(square, 8);
+
+      const U mean = total * inv_d;
+      const U var = metal::fmax(square * inv_d - mean * mean, U(0));
+      const U rstd = metal::rsqrt(var + eps);
+
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < TN; j++) {
+        thread auto& accum = Ctile.frag_at(i, j);
+        const int offset = j * TN_stride;
+
+        STEEL_PRAGMA_UNROLL
+        for (short k = 0; k < decltype(Ctile)::kElemsPerFrag; k++) {
+          const U v = accum[k] + carry[offset + k];
+          accum[k] = (v - mean) * rstd * gain[offset + k]
+              + lnbias[offset + k];
+        }
+      }
+    }
+  }
+
+"""
+
 def _read(rel: str) -> str:
     text = kernels_read(rel)
     text = _MLX_INCLUDE.sub("", text)
@@ -266,7 +366,8 @@ def _read(rel: str) -> str:
                 "changed the file, so re-check steel_gemm.py")
         text = text.replace(
             _MMA_ANCHOR,
-            _TGP_STORE + _LN_EPILOGUE + _ROW_STATS_EPILOGUE + _MMA_ANCHOR, 1)
+            _TGP_STORE + _LN_EPILOGUE + _ROW_STATS_EPILOGUE
+            + _FINAL_LN_EPILOGUE + _MMA_ANCHOR, 1)
     return text
 
 
@@ -395,6 +496,16 @@ _C_OFFSET_WITH_STATS = """
       + c_row_long;
   rowcarry += c_col_long;"""
 
+# Row 50. It reuses the `lnc1`, `lnc2` and `rowcarry` slots, which the
+# `ffn_out` GEMM never uses. `c_col_long` is always 0 here, because the
+# epilogue needs `bn == N` and so there is one N tile, but index it anyway.
+_C_OFFSET_WITH_FINAL_LN = """
+
+  // Row 50. See steel_gemm.py.
+  lnc1 += c_col_long;
+  lnc2 += c_col_long;
+  rowcarry += c_col_long;"""
+
 # The two store sites. The epilogue goes in front of each one, so it acts on
 # the accumulator in registers and never on DRAM.
 _STORE_SITES = (
@@ -409,7 +520,8 @@ _STORE_SITES = (
 
 def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
                   gelu: bool, layer_norm: bool = False,
-                  row_stats: bool = False) -> str:
+                  row_stats: bool = False,
+                  final_ln: Optional[Tuple[int, float]] = None) -> str:
     """
     Read `steel_gemm_fused.h` and make it a callable device function.
 
@@ -472,6 +584,14 @@ def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
                 "MLX changed the file, so re-check this module")
         text = text.replace(_C_OFFSET, _C_OFFSET + _C_OFFSET_WITH_STATS, 1)
 
+    if final_ln is not None:
+        if _C_OFFSET not in text:
+            raise RuntimeError(
+                "the C tile offset in steel_gemm_fused.h did not match; "
+                "MLX changed the file, so re-check this module")
+        text = text.replace(
+            _C_OFFSET, _C_OFFSET + _C_OFFSET_WITH_FINAL_LN, 1)
+
     # Both epilogues go in front of the store, so they act on the accumulator
     # in registers. The LayerNorm goes FIRST: it finishes the projection, and
     # GELU then runs on the finished value. Inserting the LayerNorm first
@@ -488,6 +608,13 @@ def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
                 anchor,
                 f"{indent}mma_op.apply_epilogue("
                 f"TransformGelu<AccumType, AccumType>{{}});\n" + anchor)
+        if final_ln is not None:
+            width, eps = final_ln
+            text = text.replace(
+                anchor,
+                f"{indent}mma_op.apply_final_layer_norm("
+                f"lnc1, lnc2, rowcarry, "
+                f"{1.0 / float(width)!r}f, {float(eps)!r}f);\n" + anchor)
         if row_stats:
             # LAST, so it sits directly above the store and reads the value
             # the kernel is about to write.
@@ -515,6 +642,66 @@ def tgp_floats(bm: int, bn: int, bk: int, transpose_a: bool,
 THREADGROUP_BYTES = 32 * 1024
 
 
+def _loader_ok(brows: int, bcols: int, tgp_size: int) -> bool:
+    """
+    Repeat the thread geometry that `steel/gemm/loader.h` calculates.
+
+    `BlockLoader` takes these three as DEFAULT TEMPLATE ARGUMENTS, and every
+    one of them is a truncating integer division with no guard:
+
+        n_reads = (BCOLS * BROWS) / tgp_size
+        TCOLS   = BCOLS / n_reads
+        TROWS   = tgp_size / TCOLS
+
+    Then `bi = thread_idx / TCOLS` and the load loop steps `i` from 0 to
+    BROWS by TROWS. So the loader is correct only when the three divisions
+    are exact and `TROWS` divides `BROWS`. Nothing in MLX checks this,
+    because MLX only ever instantiates the tiles in its own dispatch table.
+
+    Measured on a plain GEMM with no epilogue, M=1024 K=128, `bm32 bk16`,
+    128 threads:
+
+        BN  32  64 128  ->  max_abs 0.00e+00
+        BN  48  96      ->  max_abs 5.2e+00, 5.2e+00   WRONG
+        BN 160          ->  does not compile: TCOLS is 0
+
+    At `BN = 96` this gives `n_reads = 12`, `TCOLS = 16 / 12 = 1` and
+    `TROWS = 128`. The 128 threads then load 128 rows of a 96 row tile, so
+    the loader reads 32 rows past the operand and writes past the threadgroup
+    buffer. The answer is wrong and nothing reports it.
+
+    Return True when the geometry is exact.
+    """
+    if brows <= 0 or bcols <= 0 or tgp_size <= 0:
+        return False
+    if (bcols * brows) % tgp_size:
+        return False
+    n_reads = (bcols * brows) // tgp_size
+    if n_reads < 1 or bcols % n_reads:
+        return False
+    tcols = bcols // n_reads
+    if tgp_size % tcols:
+        return False
+    trows = tgp_size // tcols
+    return brows % trows == 0
+
+
+def loader_geometry_ok(bm: int, bn: int, bk: int, wm: int, wn: int,
+                       transpose_a: bool, transpose_b: bool) -> bool:
+    """
+    Return True when BOTH block loaders of this tile have exact geometry.
+
+    A tile that fails this gives a WRONG ANSWER, not a slow one. See
+    `_loader_ok()`. `choose_tile()` and `choose_final_ln_tile()` both apply
+    it, and `steel_addmm()` refuses a tile that fails it.
+    """
+    tgp_size = wm * wn * 32
+    a_rows, a_cols = (bk, bm) if transpose_a else (bm, bk)
+    b_rows, b_cols = (bn, bk) if transpose_b else (bk, bn)
+    return (_loader_ok(a_rows, a_cols, tgp_size)
+            and _loader_ok(b_rows, b_cols, tgp_size))
+
+
 def fits_threadgroup(bm: int, bn: int, bk: int, transpose_a: bool,
                      transpose_b: bool, itemsize: int = 4) -> bool:
     """Return True when the two threadgroup buffers fit."""
@@ -530,6 +717,17 @@ def fits_threadgroup(bm: int, bn: int, bk: int, transpose_a: bool,
 #     bm64 bn64  1.648 ms      bm64 bn128 1.907 ms     bm128 bn64 1.947 ms
 #
 # against 2.300 ms for `mx.addmm` then `mlx_nn.gelu`.
+#
+# THAT ORDER HOLDS FOR `ffn_in` ONLY. `ffn_in` has a vector bias and a GELU,
+# so it is compute bound and the tile shape matters. `ffn_out` and `out proj`
+# take the residual as a MATRIX C, which makes them IO bound, and there the
+# tile shape does not matter. Measured at the same M, K and N (131072, 128,
+# 128) with a matrix C, 40 repeats:
+#
+#     bm32 bn64  1.8055 ms    bm32 bn128 1.8074 ms    bm64 bn128 1.8048 ms
+#
+# So a full row tile (bn = N) is FREE on those two GEMMs, and it is not free
+# on `ffn_in`. A full row tile lets one threadgroup own a whole output row.
 _TILES = [
     (32, 64, 16, 2, 2),
     (64, 32, 16, 2, 2),
@@ -559,13 +757,58 @@ def choose_tile(m: int, n: int, k: int, transpose_a: bool = False,
             continue
         if not fits_threadgroup(bm, bn, bk, transpose_a, transpose_b):
             continue
+        if not loader_geometry_ok(bm, bn, bk, wm, wn, transpose_a,
+                                  transpose_b):
+            # A wrong answer, not a slow one. See `_loader_ok()`.
+            continue
         return bm, bn, bk, wm, wn
+    return None
+
+
+# Row 50. The final LayerNorm epilogue needs a FULL ROW tile: `bn == N`, so
+# one threadgroup owns the whole output row, and `wn == 1`, so one simdgroup
+# owns it and the two `simd_shuffle_xor` steps reduce all of it.
+#
+# `bm32 wm4` is the best of the six that build, at every size measured
+# (`profiling/final_ln_probe.py`). `wm2` does not compile at `bn = 128`: 64
+# threads cannot load that threadgroup tile.
+_FINAL_LN_TILES = [(32, 16, 4), (64, 16, 4)]
+
+
+def choose_final_ln_tile(
+        m: int, n: int, k: int,
+        transpose_b: bool = True) -> Optional[Tuple[int, int, int, int, int]]:
+    """
+    Return a full row tile for the final LayerNorm epilogue, or None.
+
+    None means the shape cannot take row 50. The usual reason is a wide
+    `d_model`: `bn = N` puts N * (bk + 4) floats in the threadgroup, so
+    `d_model = 1024` needs 80 KiB against the 32 KiB limit. Shape 8 therefore
+    keeps the separate final LayerNorm.
+    """
+    if not kernels_available():
+        return None
+    if n % 8:
+        # TN = BN / (WN * 8) must be a whole number of fragments.
+        return None
+    for bm, bk, wm in _FINAL_LN_TILES:
+        if m % bm or k % bk or bm % (wm * 8):
+            continue
+        if not fits_threadgroup(bm, n, bk, False, transpose_b):
+            continue
+        if not loader_geometry_ok(bm, n, bk, wm, 1, False, transpose_b):
+            # `bn = N` here, so N itself decides. With `bk16` and 128
+            # threads only N in {8, 16, 32, 64, 128} has exact geometry, so
+            # `d_model = 96` gets no tile and keeps its own final LayerNorm.
+            continue
+        return bm, n, bk, wm, 1
     return None
 
 
 def build_header(align_m: bool, align_n: bool, align_k: bool,
                  gelu: bool, layer_norm: bool = False,
-                 row_stats: bool = False) -> str:
+                 row_stats: bool = False,
+                 final_ln: Optional[Tuple[int, float]] = None) -> str:
     """Inline every steel header, then the hoisted kernel."""
     parts = [
         "#ifndef METAL_FUNC",
@@ -580,7 +823,8 @@ def build_header(align_m: bool, align_n: bool, align_k: bool,
     if gelu:
         parts.append(_GELU_TRANSFORM)
     parts.append(
-        _hoist_kernel(align_m, align_n, align_k, gelu, layer_norm, row_stats))
+        _hoist_kernel(align_m, align_n, align_k, gelu, layer_norm, row_stats,
+                      final_ln))
     return "\n".join(parts)
 
 
@@ -590,7 +834,8 @@ _CACHE: Dict[tuple, object] = {}
 def _source(m: int, n: int, k: int, lda: int, ldb: int, ldd: int,
             ldc: int, fdc: int, bm: int, bn: int, bk: int, wm: int, wn: int,
             transpose_a: bool, transpose_b: bool,
-            layer_norm: bool = False, row_stats: bool = False) -> str:
+            layer_norm: bool = False, row_stats: bool = False,
+            final_ln: bool = False) -> str:
     """
     The kernel body. It builds GEMMParams on the stack, then calls the
     hoisted kernel.
@@ -608,10 +853,22 @@ def _source(m: int, n: int, k: int, lda: int, ldb: int, ldd: int,
     # The callee always takes the three LayerNorm pointers. When the epilogue
     # is off, nothing dereferences them and `a` stands in, so the kernel needs
     # no extra buffer.
-    ln_args = "rowstat, lnc1, lnc2" if layer_norm else "a, a, a"
+    if layer_norm:
+        ln_args = "rowstat, lnc1, lnc2"
+    elif final_ln:
+        # Row 50 reads the two constant slots and never `rowstat`.
+        ln_args = "a, lnc1, lnc2"
+    else:
+        ln_args = "a, a, a"
     # `out` stands in for the partials buffer when row 47 is off. Nothing
     # dereferences it then, so the kernel needs no extra buffer.
-    stat_args = "rowpart, rowcarry" if row_stats else "out, a"
+    if row_stats:
+        stat_args = "rowpart, rowcarry"
+    elif final_ln:
+        # Row 50 reads the carry slot and never writes partials.
+        stat_args = "out, rowcarry"
+    else:
+        stat_args = "out, a"
     return f"""
   threadgroup float As[{a_floats}];
   threadgroup float Bs[{b_floats}];
@@ -658,6 +915,9 @@ def steel_addmm(
     lnc2: Optional[mx.array] = None,
     row_stats: bool = False,
     row_carry: Optional[mx.array] = None,
+    final_gain: Optional[mx.array] = None,
+    final_bias: Optional[mx.array] = None,
+    final_eps: float = 1e-5,
 ):
     """
     `bias + a @ b`, with GELU folded into the GEMM epilogue when `gelu`.
@@ -766,6 +1026,13 @@ def steel_addmm(
         raise ValueError(
             f"tile {bm}x{bn}x{bk} does not fit the 32 KiB threadgroup")
 
+    if not loader_geometry_ok(bm, bn, bk, wm, wn, transpose_a, transpose_b):
+        # This is a WRONG ANSWER, not a slow one, and MLX reports nothing.
+        # See `_loader_ok()`.
+        raise ValueError(
+            f"tile {bm}x{bn}x{bk} wm{wm} wn{wn} gives the block loader "
+            f"inexact thread geometry, so it would read past the operand")
+
     align_m = m % bm == 0
     align_n = n % bn == 0
     align_k = k % bk == 0
@@ -808,28 +1075,63 @@ def steel_addmm(
             raise ValueError(
                 f"row_carry must be ({n},), got {row_carry.shape}")
 
+    final_ln = final_gain is not None or final_bias is not None
+    if final_ln:
+        if final_gain is None or final_bias is None:
+            raise ValueError(
+                "the final LayerNorm epilogue needs final_gain and "
+                "final_bias together, or neither")
+        if row_stats or layer_norm:
+            raise ValueError(
+                "the final LayerNorm epilogue does not share a kernel with "
+                "row 46 or row 47; they use the same pointer slots")
+        if bn != n or wn != 1:
+            # One simdgroup must own the whole output row, or the two
+            # `simd_shuffle_xor` steps reduce only part of it.
+            raise ValueError(
+                f"the final LayerNorm epilogue needs bn == N and wn == 1, "
+                f"got bn={bn}, N={n}, wn={wn}")
+        if not (align_m and align_n):
+            # The epilogue reads the three vectors with no bounds check.
+            raise ValueError(
+                f"the final LayerNorm epilogue needs an aligned tile: M={m} "
+                f"must divide by bm={bm} and N={n} by bn={bn}")
+        for name, vec in (("final_gain", final_gain),
+                          ("final_bias", final_bias)):
+            if vec.ndim != 1 or vec.shape[0] != n:
+                raise ValueError(f"{name} must be ({n},), got {vec.shape}")
+        if row_carry is None:
+            row_carry = mx.zeros((n,), dtype=mx.float32)
+        elif row_carry.ndim != 1 or row_carry.shape[0] != n:
+            raise ValueError(
+                f"row_carry must be ({n},), got {row_carry.shape}")
+
+    final_arg = (n, float(final_eps)) if final_ln else None
     key = (m, n, k, lda, ldb, ldd, ldc, bm, bn, bk, wm, wn,
            transpose_a, transpose_b, gelu, layer_norm, row_stats,
-           align_m, align_n)
+           align_m, align_n, final_arg)
     kernel = _CACHE.get(key)
     if kernel is None:
         names = ["a", "b", "c"]
         if layer_norm:
             names += ["rowstat", "lnc1", "lnc2"]
-        if row_stats:
+        if final_ln:
+            names += ["lnc1", "lnc2"]
+        if row_stats or final_ln:
             names += ["rowcarry"]
         kernel = mx.fast.metal_kernel(
             name=f"steel_addmm_m{m}_n{n}_k{k}"
                  f"_bm{bm}_bn{bn}_bk{bk}_wm{wm}_wn{wn}"
                  f"_tb{int(transpose_b)}_g{int(gelu)}_ln{int(layer_norm)}"
-                 f"_mc{int(ldc != 0)}_rs{int(row_stats)}",
+                 f"_mc{int(ldc != 0)}_rs{int(row_stats)}"
+                 f"_fln{int(final_ln)}",
             input_names=names,
             output_names=["out", "rowpart"] if row_stats else ["out"],
             header=build_header(align_m, align_n, align_k, gelu, layer_norm,
-                                row_stats),
+                                row_stats, final_arg),
             source=_source(m, n, k, lda, ldb, ldd, ldc, 1,
                            bm, bn, bk, wm, wn, transpose_a, transpose_b,
-                           layer_norm, row_stats),
+                           layer_norm, row_stats, final_ln),
             ensure_row_contiguous=False,
         )
         _CACHE[key] = kernel
@@ -839,7 +1141,9 @@ def steel_addmm(
     operands = [a, b, bias]
     if layer_norm:
         operands += [rowstat, lnc1, lnc2]
-    if row_stats:
+    if final_ln:
+        operands += [final_gain, final_bias]
+    if row_stats or final_ln:
         operands += [row_carry]
 
     shapes = [out_shape]

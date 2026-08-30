@@ -12,7 +12,8 @@ This script builds the SAME model twice in one process, sets `plan_override`
 on each, and alternates the order each round so neither side always runs on
 a cold chip.
 
-It toggles row 47 today. Change `variant()` to toggle another field.
+It toggles row 50 today. Change the `dataclasses.replace` call below to
+toggle another field.
 
     .venv/bin/python3 profiling/plan_ab.py --cases 12
     .venv/bin/python3 profiling/plan_ab.py --cases 1,3,4,12 --repeats 150
@@ -37,9 +38,8 @@ def build(shape, off):
     m = UserOptimizedTransformer(cfg).eval()
     plan = plan_kernels(cfg, 4)
     if off:
-        # The field under test. Row 47 today.
-        plan = dataclasses.replace(plan, fuse_stats_out=None,
-                                   fuse_stats_ffn=None)
+        # The field under test. Row 50 today.
+        plan = dataclasses.replace(plan, final_ln=None)
     m.plan_override = plan
     return m, plan
 

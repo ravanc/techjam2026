@@ -250,6 +250,11 @@ class KernelPlan:
     # statistics kernel.
     fuse_stats_out: Optional[Tuple[int, int, int, int, int]] = None
     fuse_stats_ffn: Optional[Tuple[int, int, int, int, int]] = None
+    # Row 50. The full row tile for the LAST layer's `ffn_out`, which then
+    # applies the FINAL LayerNorm in its own epilogue. None keeps the
+    # separate final LayerNorm kernel. It needs `bn == d_model`, so a wide
+    # `d_model` cannot take it: shape 8 gets None.
+    final_ln: Optional[Tuple[int, int, int, int, int]] = None
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -265,7 +270,8 @@ class KernelPlan:
             f"fuse_ln_qkv={'x'.join(map(str, self.fuse_ln_qkv)) if self.fuse_ln_qkv else 'none'} "
             f"fuse_ln_ffn={'x'.join(map(str, self.fuse_ln_ffn)) if self.fuse_ln_ffn else 'none'} "
             f"stats_out={'x'.join(map(str, self.fuse_stats_out)) if self.fuse_stats_out else 'none'} "
-            f"stats_ffn={'x'.join(map(str, self.fuse_stats_ffn)) if self.fuse_stats_ffn else 'none'}"
+            f"stats_ffn={'x'.join(map(str, self.fuse_stats_ffn)) if self.fuse_stats_ffn else 'none'} "
+            f"final_ln={'x'.join(map(str, self.final_ln)) if self.final_ln else 'none'}"
         )
 
 
@@ -347,6 +353,7 @@ from steel_attention import supports as steel_supports
 # the matmul a GELU epilogue, so the FFN never writes the pre-activation to
 # DRAM and reads it back. See OPTIMIZATIONS.md row 33.
 from steel_gemm import choose_tile as steel_gemm_tile
+from steel_gemm import choose_final_ln_tile
 from steel_gemm import steel_addmm
 
 # `mx.fast.layer_norm` loses throughput below a row width of 256: 33 GB/s at
@@ -608,6 +615,26 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
             fuse_stats_ffn = steel_gemm_tile(
                 rows, config.d_model, config.ffn_dim)
 
+    # Row 50. Fold the FINAL LayerNorm into the epilogue of the GEMM ABOVE
+    # it, which is the `ffn_out` of the last layer.
+    #
+    # Rows 37, 45, 46 and 47 each named this LayerNorm as the one that stays,
+    # because row 46 folds a LayerNorm into the GEMM BELOW it and this one
+    # has no GEMM below it. None of them measured it. It is 1.2478 ms for
+    # each shape 6 chunk at 100.2 GB/s, which is 2.8% of the shape.
+    #
+    # The epilogue must own a whole output row to centre it, so this tile is
+    # a FULL ROW tile: `bn = d_model` and `wn = 1`. That is free on `ffn_out`,
+    # which takes the residual as a matrix C and is IO bound, and it is NOT
+    # free on a compute bound GEMM. See `_TILES` in steel_gemm.py.
+    #
+    # `bn = d_model` puts d_model * (bk + 4) floats in the threadgroup, so
+    # shape 8 (d_model 1024) needs 80 KiB against 32 KiB and gets None.
+    final_ln = None
+    if itemsize == 4:
+        final_ln = choose_final_ln_tile(
+            rows, config.d_model, config.ffn_dim)
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
@@ -621,6 +648,7 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         fuse_ln_ffn=fuse_ln_ffn,
         fuse_stats_out=fuse_stats_out,
         fuse_stats_ffn=fuse_stats_ffn,
+        final_ln=final_ln,
     )
 
 
@@ -818,6 +846,17 @@ def _mlx_transformer(
     # are. Everything between them is free.
     stats_out = None if plain else plan.fuse_stats_out
     stats_ffn = None if plain else plan.fuse_stats_ffn
+
+    # Row 50. The LAST `ffn_out` applies the FINAL LayerNorm in its own
+    # epilogue, so the model never reads the output activation back.
+    #
+    # `padded` keeps the plain path, because the block clears the padded rows
+    # between the GEMM and the LayerNorm. `half` keeps it because the hoisted
+    # kernel is compiled for float32.
+    final_ln = None if plain else plan.final_ln
+    # `done` says the final LayerNorm already ran, in the epilogue of the
+    # last `ffn_out`. It is False here for a model with no layer.
+    done = False
     pending = None
     last_index = len(layers) - 1
 
@@ -918,9 +957,17 @@ def _mlx_transformer(
         if defer:
             carry = carry + layer["fob"].astype(mx.float32)
             # The LAST `ffn_out` has no `ln1` below it, only the final
-            # LayerNorm, which is a plain LayerNorm. So it takes no
-            # statistics.
-            if stats_ffn is not None and index != last_index:
+            # LayerNorm. Row 47 therefore takes no statistics there. Row 50
+            # applies that LayerNorm instead.
+            if index == last_index and final_ln is not None:
+                bm, bn, bk, wm, wn = final_ln
+                x = steel_addmm(
+                    x, h, layer["fow"], transpose_b=True,
+                    bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                    final_gain=final_weight, final_bias=final_bias,
+                    row_carry=carry, final_eps=LAYER_NORM_EPS)
+                done = True
+            elif stats_ffn is not None and index != last_index:
                 bm, bn, bk, wm, wn = stats_ffn
                 x, partials = steel_addmm(
                     x, h, layer["fow"], transpose_b=True,
@@ -930,14 +977,27 @@ def _mlx_transformer(
                     partials, d_model, LAYER_NORM_EPS)
             else:
                 x = mx.addmm(x, h, layer["fow"].T)
+        elif index == last_index and final_ln is not None:
+            # No deferred bias, so the projection bias IS the whole carry.
+            # The epilogue adds it exactly as it adds the carry.
+            bm, bn, bk, wm, wn = final_ln
+            x = steel_addmm(
+                x, h, layer["fow"], transpose_b=True,
+                bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                final_gain=final_weight, final_bias=final_bias,
+                row_carry=layer["fob"].astype(mx.float32),
+                final_eps=LAYER_NORM_EPS)
+            done = True
         else:
             x = x + mx.addmm(layer["fob"], h, layer["fow"].T)
         if padded:
             x = mx.where(valid_tokens, x, 0)
 
     # The final LayerNorm absorbs the whole deferred bias. So the block never
-    # adds it to a full activation, not once in the model.
-    x = norm(x, final_weight, final_bias, carry)
+    # adds it to a full activation, not once in the model. Row 50 goes one
+    # further: the last `ffn_out` already applied it in its epilogue.
+    if not done:
+        x = norm(x, final_weight, final_bias, carry)
     # The final LayerNorm returns the bias at a zeroed position, not zero,
     # so this mask stays.
     return mx.where(valid_tokens, x, 0) if padded else x

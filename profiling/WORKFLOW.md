@@ -57,6 +57,13 @@ loses that number, so a stage under about 0.5 ms is not reproducible in the
 the floor alone. The `raw` column holds: every stage above 1 ms repeated
 within 5%, and the shape 8 `qkv proj` within 0.1%. **Rank by `raw`.**
 
+**The tool times ONE LAYER. It never sees the final LayerNorm.** That
+LayerNorm runs once for the whole forward, outside the layer, so no row of
+the table holds it and the `real per layer` line spreads it over every layer.
+It cost 1.2478 ms for each shape 6 chunk, which is 2.8% of the shape, and
+four rows of OPTIMIZATIONS.md named it without measuring it. Row 50 now folds
+it into the last `ffn_out`. **Look outside the layer as well as inside it.**
+
 **The `ln1 stats` and `ln2 stats` rows are stale since row 47.** The tool
 builds a block from the plan and times each stage alone, and it does not
 model the statistics epilogue. A shape that selects row 47 no longer runs
