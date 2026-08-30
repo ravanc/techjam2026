@@ -25,26 +25,29 @@ through Metal.
 
 | # | Shape | CPU ms † | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 61.252 | 17.309 | 3.788 | 3.54x | **16.17x** | 4.57x |
-| 2 | B1 D128 H4 S128 | 2.571 | 1.644 | 0.652 | 1.56x | **3.94x** | 2.52x |
-| 3 | B4 D128 H4 S128 | 7.169 | 2.024 | 0.757 | 3.54x | **9.47x** | 2.67x |
-| 4 | B16 D128 H4 S128 | 19.373 | 4.726 | 1.375 | 4.10x | **14.09x** | 3.44x |
-| 5 | B128 D128 H4 S128 | 139.502 | 33.535 | 7.359 | 4.16x | **18.96x** | 4.56x |
-| 6 | B10000 D128 H4 S128 | 14639.960 | 2669.151 | 567.842 | 5.48x | **25.78x** | 4.70x |
-| 7 | B64 D32 H4 S128 | 25.959 | 11.242 | 1.124 | 2.31x | **23.10x** | 10.00x |
-| 8 | B64 D1024 H4 S128 | 470.854 | 165.156 | 127.557 | 2.85x | **3.69x** | 1.29x |
-| 9 | B64 D128 H1 S128 | 35.099 | 7.932 | 3.923 | 4.42x | **8.95x** | 2.02x |
-| 10 | B64 D128 H2 S128 | 46.106 | 12.966 | 3.850 | 3.56x | **11.98x** | 3.37x |
-| 11 | B64 D128 H16 S128 | 130.289 | 41.966 | 3.850 | 3.10x | **33.84x** | 10.90x |
-| 12 | B64 D128 H4 S32 | 12.224 | 3.341 | 1.309 | 3.66x | **9.34x** | 2.55x |
-| 13 | B64 D128 H4 S1024 | 1899.325 | 562.926 | 45.231 | 3.37x | **41.99x** | 12.45x |
+| 1 | B64 D128 H4 S128 | 61.252 | 17.270 | 3.506 | 3.55x | **17.47x** | 4.93x |
+| 2 | B1 D128 H4 S128 | 2.571 | 1.617 | 0.651 | 1.59x | **3.95x** | 2.48x |
+| 3 | B4 D128 H4 S128 | 7.169 | 1.958 | 0.643 | 3.66x | **11.15x** | 3.04x |
+| 4 | B16 D128 H4 S128 | 19.373 | 4.529 | 1.174 | 4.28x | **16.50x** | 3.86x |
+| 5 | B128 D128 H4 S128 | 139.502 | 33.600 | 6.681 | 4.15x | **20.88x** | 5.03x |
+| 6 | B10000 D128 H4 S128 | 15777.204 | 2673.760 | 489.310 | 5.90x | **32.24x** | 5.46x |
+| 7 | B64 D32 H4 S128 | 25.959 | 11.404 | 1.055 | 2.28x | **24.59x** | 10.80x |
+| 8 | B64 D1024 H4 S128 | 470.854 | 165.374 | 124.911 | 2.85x | **3.77x** | 1.32x |
+| 9 | B64 D128 H1 S128 | 35.099 | 7.951 | 3.602 | 4.41x | **9.74x** | 2.21x |
+| 10 | B64 D128 H2 S128 | 46.106 | 12.975 | 3.592 | 3.55x | **12.84x** | 3.61x |
+| 11 | B64 D128 H16 S128 | 130.289 | 42.056 | 3.602 | 3.10x | **36.17x** | 11.68x |
+| 12 | B64 D128 H4 S32 | 12.224 | 3.265 | 1.115 | 3.74x | **10.96x** | 2.93x |
+| 13 | B64 D128 H4 S1024 | 1899.325 | 567.703 | 41.518 | 3.35x | **45.75x** | 13.67x |
 
 | Metric | Value |
 |---|---:|
-| Median MLX speedup over CPU | **14.09x** |
-| Range | 3.69x to 41.99x |
-| Median MLX rate | 2.231 TFLOP/s |
-| Best MLX rate | 4.178 TFLOP/s (shape 13) |
+| Median MLX speedup over CPU | **16.50x** |
+| Range | 3.77x to 45.75x |
+| Median MLX rate | 2.385 TFLOP/s |
+| Best MLX rate | 4.552 TFLOP/s (shape 13) |
+
+The MLX column totals **681.4 ms** over the 13 shapes. That total is the
+score this project moves: the last change, row 46, took it from 722.3 ms.
 
 **† the CPU column came from the cache**, not from this sweep, so the two
 speedup columns against it mix two sweeps. See the `--cpu-cache` rule in
@@ -53,7 +56,11 @@ MLX column is the one that decides whether a change won.
 
 Accuracy: all 13 shapes PASS at `atol=0.002`, `rtol=0.02`, against the CPU
 baseline, with **zero failed elements** on every shape, including
-0 / 163,840,000 at shape 6. `max_abs` runs 1.19e-06 to 2.65e-06.
+0 / 163,840,000 at shape 6. `max_abs` runs 1.07e-06 to 3.34e-06, against an `atol` of 0.002.
+
+The shape 6 CPU entry above was re-measured on this sweep, at 15777.204 ms
+against 14639.960 ms on the sweep before. Nothing in the model caused that.
+It is why the rule below exists.
 
 **Read the MPS column, not only the CPU column.** The CPU baseline moves with
 machine load and chip temperature. It drifted up to 45.9% between two sweeps
@@ -65,50 +72,62 @@ and the machine holds 12.0 GiB, so no backend runs it here.
 
 ## Current bottlenecks
 
-Measured with `profiling/stage_roofline.py` after row 33. Shape 6 carries
-66.5% of the FLOP weight: one layer, one chunk of 1024 rows, real layer time
-**13.75 ms**. The roofs are 4.06 TFLOP/s and 128 GB/s, both measured here.
+Measured with `profiling/stage_roofline.py --shapes 6` after row 46. Shape 6
+carries 66.5% of the FLOP weight: one layer, one chunk of 1024 rows, real
+layer time **12.02 ms**, stage sum 11.63 ms.
 
 | Stage | ms | share | Limit | Against its own roof | Headroom |
 |---|---:|---:|---|---:|---|
-| qkv proj | 3.82 | 29% | COMPUTE | 83% of matmul peak | little |
-| sdpa (attention) | 2.20 | 17% | IO | 95% of bandwidth | none. Row 34 took it |
-| out proj (+residual) | 1.68 | 13% | IO | 94% of bandwidth | none. Row 36 took it |
-| ffn_out (+residual) | 1.67 | 13% | IO | 94% of bandwidth | none. Row 36 took it |
-| ffn_in + gelu (fused) | 1.47 | 11% | COMPUTE | 72% of matmul peak | little. Row 33 took it |
-| ln1 + ln2 | 2.12 | 16% | IO | 97% of bandwidth | none. Rows 31 and 36 took it |
+| qkv proj (+layer norm) | 3.560 | 31% | COMPUTE | 89% of matmul peak | little. Row 46 took the LayerNorm |
+| sdpa (attention) | 2.218 | 19% | IO | at the bandwidth roof | none. Row 34 took it |
+| ffn_out (+residual) | 1.665 | 14% | IO | at the bandwidth roof | none. Row 36 took it |
+| out proj (+residual) | 1.621 | 14% | IO | at the bandwidth roof | none. Row 36 took it |
+| ffn_in + gelu (+layer norm) | 1.496 | 13% | COMPUTE | 71% of matmul peak | little. Rows 33 and 46 took it |
+| ln1 stats + ln2 stats | 1.071 | 9% | IO | at the bandwidth roof | none. Row 46 halved it |
 | merge heads | free | — | — | a reshape, not a copy | — |
 | split+transpose | free | — | — | a strided view, not a copy | — |
 
-Row 36 removed the two separate residual adds and row 33 removed the GELU
-pass, so the block is eight stages, not eleven. **Every measurable stage now
-runs at 72% or more of the roof that binds them, and five of the six run at
-83% or more.** The two free stages sit at the launch floor because they are
-views, not work.
+The block is eight stages, not eleven: row 36 removed the two separate
+residual adds and row 33 removed the GELU pass.
 
-Row 33 was the last stage with real headroom. It ran at 45.9% of the matmul
-peak, because GELU was a separate kernel and cost a whole extra read plus
-write of the activation. `steel_gemm.py` hoists MLX's steel GEMM and applies
-GELU to the accumulator tile in registers instead:
+**Read `%comp` and `%mem` in that tool as a rank, not as a fraction of the
+roof.** It subtracts the launch floor from the stage time but not from the
+roof, so both columns read high and can pass 100%. See
+[references/machine.md](references/machine.md). The table above says "at the
+bandwidth roof" rather than a percentage for that reason. The claim still
+holds where it matters: a standalone `fast_layernorm` at the shape 6 `ln1`
+size runs at 107.5 GB/s and a plain `x * 2.0` at the same size runs at
+108.9 GB/s, so the LayerNorm was already at copy speed.
 
-| `ffn_in` at the shape 6 chunk | ms | % of matmul peak |
+That is why row 46 is a byte optimization and not a kernel optimization. No
+better LayerNorm kernel could win `ln1`, because the old one already ran at
+copy speed. Only moving fewer bytes could. A LayerNorm is affine in the row,
+so it distributes through the GEMM below it and folds into that GEMM's
+weights at build time:
+
+    out[i,n] = P_i * (x @ Bw + c3)[i,n] - Q_i * c1[n] + c2[n]
+
+`Bw`, `c1`, `c2` and `c3` depend on the weights alone, so they are built
+once. What is left at run time is two floats for each row:
+
+| at the shape 6 chunk | ms | MiB moved |
 |---|---:|---:|
-| `mlx_nn.gelu(mx.addmm(...))` | 2.30 | 45.9 |
-| fused epilogue | **1.47** | **71.9** |
+| `fast_layernorm`, writing a whole activation | 1.108 | 128.0 |
+| the statistics kernel, writing 2 floats per row | **0.545** | **65.0** |
 
 ### What is still open
 
 | # | Bottleneck | Size | Why it is still open |
 |---:|---|---|---|
-| 37 | Shape 8 cannot reach row 36 | 1.53 ms of its 32.51 ms layer, **1.0%** FLOP-weighted | `mx.fast.layer_norm` takes no `pre_bias`, and `fast_layernorm` serves a row width under 256. A wide variant needs 32 floats per lane against 8 today, so register pressure is the open question |
+| 44 | `ffn_in` writes `hidden` and `ffn_out` reads it back | about **5.0%** of the shape 6 layer | Chaining the two GEMMs deletes a 128 MiB round trip. The tile it needs is measured: `bn = 128` costs 0.884x, and the threadgroup holds `hidden` at 28.5 KiB of 32. It is a two GEMM kernel with a threadgroup handoff, so the cost is difficulty |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
-| — | qkv proj | 3.82 ms, 29% of the shape 6 layer | It is the largest stage, but it already runs at 83% of the matmul peak. It holds 43% of the block FLOPs because it is three projections in one |
-| — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Not worth the effort |
+| 37 | Shape 8 still runs with `defer_bias=False` | about **1.0%** FLOP-weighted | Row 46 removed the need for a `pre_bias` hook at `ln1` and `ln2`, but the FINAL LayerNorm has no GEMM below it and still needs the carry. The cheap fix is one `x = x + carry` before that norm, not a wide `fast_layernorm`. Measure it before building the kernel |
+| — | qkv proj | 3.56 ms, 31% of the shape 6 layer | The largest stage, and it already runs at 89% of the matmul peak. It holds 43% of the block FLOPs because it is three projections in one |
+| — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Shape 2 declines every fused path because it has 128 rows, under the 512 row gate |
 
-Shape 8 is the exception to all of this. It is genuinely compute-bound: its
-QKV projection runs at **100.1% of the measured matmul peak** at 351
-FLOP/byte, and its other three matmuls reach 89% to 99%. Nothing is left in
-it except the fallback attention kernel and row 37.
+Shape 8 is compute-bound: its four GEMMs are most of its layer and they run
+near the measured matmul peak. Its remaining slack is the fallback attention
+kernel and the carry note under row 37.
 
 Shape 13 is close behind. Its `sdpa` is 45% of the layer and already holds
 80% of the matmul peak.
@@ -127,12 +146,19 @@ largest wins:
 | 31 | A single-pass LayerNorm kernel for a row width under 256 | **1.205x** FLOP-weighted |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **1.132x** FLOP-weighted |
 | 29 | `mx.addmm` for every projection, so the GPU adds the bias inside the matmul | 1.096x FLOP-weighted |
+| 33 | Fold GELU into the `ffn_in` matmul epilogue | 1.064x FLOP-weighted |
+| 46 | Absorb the LayerNorm into the GEMM weights, and apply it in the epilogue | **1.060x** FLOP-weighted |
 | 7 | A shape-aware kernel plan (`KernelPlan`) | 1.57x at shape 13 |
 | 10 | Batch chunking, full depth for each chunk | peak 9.16 GiB to 2.68 GiB |
 | 23 | Return the output as a view of MLX memory, not a copy | 71.6 ms of 1590.2 ms at shape 6 |
 
-Two of these are custom Metal kernels: `steel_attention.py` and
-`fast_layernorm.py`.
+Three of these are custom Metal kernels: `steel_attention.py`,
+`steel_gemm.py` and `fast_layernorm.py`. All three hoist a kernel that MLX
+already ships and compile it in a way MLX does not expose.
+
+[agent_loop.md](agent_loop.md) holds the loop that produces these: how a
+candidate is screened, the four gates it must pass to be kept, and a log of
+what each turn measured.
 
 ## Layout
 
@@ -140,7 +166,8 @@ Two of these are custom Metal kernels: `steel_attention.py` and
 |---|---|
 | `torch_transformer_benchmark.py` | The baseline model, the MLX model, and the harness |
 | `steel_attention.py` | MLX's flash attention kernel, compiled at a `head_dim` MLX does not ship |
-| `fast_layernorm.py` | A single-pass LayerNorm kernel for a row width under 256, with the row 36 `pre_bias` hook |
+| `steel_gemm.py` | MLX's steel GEMM, with epilogues MLX does not expose: GELU (row 33) and the LayerNorm (row 46) |
+| `fast_layernorm.py` | A single-pass LayerNorm for a row width under 256, the row 36 `pre_bias` hook, and the row 46 statistics kernel |
 | `scoreboard.py` | The graded run over all 13 shapes |
 | `flops.py` | The FLOP model and the measured matmul rates |
 | `appendix_cases.py` | The 14 shapes as code |
@@ -150,6 +177,9 @@ Two of these are custom Metal kernels: `steel_attention.py` and
 | `profiling/WORKFLOW.md` | How to find the next optimization. Read it first |
 | `profiling/stage_roofline.py` | Splits one block into stages and names each limit |
 | `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel |
+| `profiling/tile_probe.py` | What a GEMM tile costs, when a fusion forces the tile. It killed row 43 |
+| `profiling/ln_absorb_probe.py` | The accuracy screen for row 46, against a float64 reference |
+| `agent_loop.md` | The optimization loop: the screens, the four gates, and the run log |
 | `references/` | Measured facts: the machine, the shapes, the MLX kernels, the scoreboard |
 
 ## Reproduce

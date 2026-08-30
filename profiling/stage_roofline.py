@@ -71,6 +71,7 @@ from torch_transformer_benchmark import (
     _attention,
 )
 from fast_layernorm import layer_norm as fast_layer_norm
+from fast_layernorm import layer_norm_stats
 from steel_gemm import steel_addmm
 
 MIB = 1024 * 1024
@@ -236,6 +237,15 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
                                LAYER_NORM_EPS, pre_bias=carry)
         return norm_kernel(value, layer[wkey], layer[bkey], LAYER_NORM_EPS)
 
+    # Row 46. When the plan folds the LayerNorm into the GEMM below it, the
+    # model runs a statistics kernel and NOT a LayerNorm, and the GEMM takes
+    # the prepacked weight. The stage list must follow the block, exactly as
+    # it already does for row 33's GELU. Before this, the tool measured an
+    # `ln1` the model no longer runs, and `sum of stages` came out ABOVE the
+    # real layer, which is the tell.
+    ln_qkv = plan.fuse_ln_qkv
+    ln_ffn = plan.fuse_ln_ffn
+
     h1 = do_norm(x, "n1w", "n1b")
     mx.eval(h1)
     fused = mx.addmm(layer["qkvb"], h1, layer["qkvw"])
@@ -297,17 +307,41 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
             "note": note,
         })
 
-    # 1. LayerNorm. No matmul. Reads x, writes h.
-    add(norm_name.replace("ln0", "ln1"),
-        lambda: do_norm(x, "n1w", "n1b"), 0.0, 2 * act)
-
-    # 2. QKV projection. Reads h and the weight, writes 3 head-width acts.
+    # 1. LayerNorm. No matmul.
+    #
+    # Without row 46 it reads x and writes a whole activation. With row 46 it
+    # reads x and writes two floats for each row, so the write almost
+    # disappears and the stage is about half the bytes.
     qkv_w = d_model * 3 * heads_n * width * ITEM
-    add("qkv proj (addmm)",
-        lambda: mx.addmm(layer["qkvb"], h1, layer["qkvw"]),
-        2.0 * tokens * d_model * 3 * heads_n * width,
-        act + qkv_w + 3 * qkv_act,
-        "pad %d->%d" % (head_dim, width) if width != head_dim else "")
+    stat_bytes = 2 * tokens * ITEM
+
+    if ln_qkv is not None:
+        stats1 = layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry)
+        mx.eval(stats1)
+        add("ln1 stats (row 46)",
+            lambda: layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry),
+            0.0, act + stat_bytes)
+
+        # 2. QKV projection, with the LayerNorm folded into its epilogue.
+        bm, bn, bk, wm, wn = ln_qkv
+        add("qkv proj (+layer norm)",
+            lambda: steel_addmm(
+                layer["ln1c3"], x, layer["ln1w"], transpose_b=False,
+                bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                rowstat=stats1, lnc1=layer["ln1c1"], lnc2=layer["ln1c2"]),
+            2.0 * tokens * d_model * 3 * heads_n * width,
+            act + qkv_w + 3 * qkv_act,
+            "row 46")
+    else:
+        add(norm_name.replace("ln0", "ln1"),
+            lambda: do_norm(x, "n1w", "n1b"), 0.0, 2 * act)
+
+        # 2. QKV projection. Reads h and the weight, writes 3 head-width acts.
+        add("qkv proj (addmm)",
+            lambda: mx.addmm(layer["qkvb"], h1, layer["qkvw"]),
+            2.0 * tokens * d_model * 3 * heads_n * width,
+            act + qkv_w + 3 * qkv_act,
+            "pad %d->%d" % (head_dim, width) if width != head_dim else "")
 
     # 3. Split and transpose into the head layout. Pure data movement.
     # Evaluate the three arrays separately. An earlier version concatenated
@@ -365,13 +399,29 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
         add("residual add", lambda: x + attn_out, 0.0, 3 * act)
 
     # The FFN, for the share it takes of the block.
-    add(norm_name.replace("ln0", "ln2"),
-        lambda: do_norm(x1, "n2w", "n2b"), 0.0, 2 * act)
+    if ln_ffn is not None:
+        stats2 = layer_norm_stats(x1, LAYER_NORM_EPS, pre_bias=carry)
+        mx.eval(stats2)
+        add("ln2 stats (row 46)",
+            lambda: layer_norm_stats(x1, LAYER_NORM_EPS, pre_bias=carry),
+            0.0, act + stat_bytes)
+    else:
+        add(norm_name.replace("ln0", "ln2"),
+            lambda: do_norm(x1, "n2w", "n2b"), 0.0, 2 * act)
     # Profile the FFN input the PLAN selects. Row 33 folds GELU into the
     # GEMM epilogue, so the fused path never writes the pre-activation to
     # DRAM. A fixed `mlx_nn.gelu(mx.addmm(...))` here measures a kernel the
     # model does not run.
-    if plan.fuse_gelu is not None:
+    if ln_ffn is not None:
+        fbm, fbn, fbk, fwm, fwn = ln_ffn
+        ffn_in_name = "ffn_in + gelu (+layer norm)"
+
+        def build_ffn_in():
+            return steel_addmm(
+                layer["ln2c3"], x1, layer["ln2w"], transpose_b=True,
+                gelu=True, bm=fbm, bn=fbn, bk=fbk, wm=fwm, wn=fwn,
+                rowstat=stats2, lnc1=layer["ln2c1"], lnc2=layer["ln2c2"])
+    elif plan.fuse_gelu is not None:
         bm, bn, bk, wm, wn = plan.fuse_gelu
         ffn_in_name = "ffn_in + gelu (fused)"
 
