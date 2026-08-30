@@ -49,12 +49,82 @@ Use these to tell a slow kernel from a shape that is simply small.
 
 | Item | Rate | Source |
 |---|---|---|
-| GPU float32 matmul, measured | 4.06 TFLOP/s | `flops.py --peak` |
+| GPU float32, theoretical peak | 4.946 TFLOP/s | `14 x 128 x 2 x 1.380 GHz`, see below |
+| GPU float32 matmul, **measured** | **4.06 TFLOP/s** | `flops.py --peak` |
+| GPU float32 pure FMA loop, measured | 3.92 TFLOP/s | `profiling/alu_peak.py` |
 | Memory bandwidth, specification | 150 GB/s | Apple, for the M3 Pro |
 | Memory bandwidth, **measured streaming** | **128 GB/s** | `x * 2.0` at 1 GiB |
 
 Use the measured 128 GB/s as the roof, not the 150 GB/s specification. A
-kernel cannot exceed what a plain copy reaches.
+kernel cannot exceed what a plain copy reaches. Use 4.06 TFLOP/s the same
+way: it is the best rate anything has reached here.
+
+### Where the 4.946 TFLOP/s comes from
+
+    peak = cores x ALUs per core x 2 flop per FMA x clock
+         = 14 x 128 x 2 x 1.380 GHz
+
+| term | value | how it was checked |
+|---|---|---|
+| cores | 14 | `system_profiler SPDisplaysDataType`; also `gpu-core-count` in the `AGXAccelerator` IORegistry node |
+| clock | 1.380 GHz | the GPU DVFS table, below |
+| ALUs per core | 128 | bounded below at 105 by measurement, below |
+| flop per FMA | 2 | one multiply and one add |
+
+**An earlier version used 1.398 GHz, asserted from memory. It is wrong.**
+The hardware publishes its own GPU DVFS table:
+
+    ioreg -lw0 -p IODeviceTree -n pmgr | grep -o '"voltage-states9" = <[0-9a-f]*>'
+
+It decodes as pairs of little-endian uint32, `{frequency Hz, millivolts}`:
+
+| MHz | 0 | 338 | 618 | 796 | 832 | 924 | 952 | 1056 | 1064 | 1182 | 1182 | 1312 | 1242 | **1380** |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mV | 125 | 665 | 705 | 710 | 745 | 745 | 805 | 805 | 880 | 880 | 935 | 935 | 965 | 965 |
+
+`voltage-states9` is the GPU rail, not a CPU cluster: its top state is far
+below any CPU core, its voltage ramps like a real rail, and it has a
+`voltage-states9-sram` companion exactly as the two CPU clusters do.
+
+**The ALU count is bounded, not read.** Nothing on this machine publishes it.
+But a matmul reaches 4.06 TFLOP/s and the GPU cannot exceed 1380 MHz, so
+
+    ALUs per core >= 4.06e12 / (14 x 2 x 1.380e9) = 105.1
+
+64 is impossible, and 128 is the next width an Apple GPU core has.
+
+### The GPU does not hold 1380 MHz
+
+Both saturating measurements imply a clock near 1.1 GHz, not 1.38 GHz:
+
+| what | rate | implied clock at 128 ALUs |
+|---|---:|---:|
+| pure FMA loop, sustained | 3.92 TFLOP/s | 1.09 GHz |
+| float32 matmul | 4.06 TFLOP/s | 1.13 GHz |
+
+1.09 GHz sits between the 1064 and 1182 MHz states of the table above, so
+this is the DVFS state the chip chooses under a sustained load, not a
+measurement error. **It is not a warm-up effect.** `alu_peak.py` queues 24
+kernels into one `eval` and holds the GPU busy for 185 ms with no gap; the
+rate rises from 3.86 to 3.92 TFLOP/s and stops there.
+
+So an MFU against 4.946 TFLOP/s carries an 18% penalty that no kernel can
+remove. Read the MFU column against 82%.
+
+**A causal shape can print more than 82%, and shape 13 does.** The FLOP model
+counts the FULL `S x S` attention, because that is what `BaselineTransformer`
+computes, while the optimized path skips the upper triangle. So a long
+sequence is credited with work it never runs:
+
+| shape | counted GFLOP | executed GFLOP | printed MFU | MFU on executed work |
+|---:|---:|---:|---:|---:|
+| 13 (S=1024) | 188.98 | 120.33 | 91.9% | **58.5%** |
+| 6 (S=128) | 1342.18 | 1175.72 | 54.5% | 47.7% |
+| 8 (S=128) | 429.50 | 420.97 | 71.8% | 70.4% |
+
+The 82% ceiling applies to executed work. Get the second column from
+`flops.model_flops(config, causal_aware=True)`.
+
 
 **Check for load that is not Python.** The rule 1 command in CLAUDE.md
 greps for `.venv/bin/python3`, so it finds a competing sweep and nothing
@@ -98,9 +168,15 @@ memory-bound. Check the arithmetic intensity before you rewrite it.
 
 ## The kernel launch floor
 
-One `mx.eval()` + `mx.synchronize()` round trip costs **0.13 to 0.17 ms**,
+One `mx.eval()` + `mx.synchronize()` round trip costs **0.15 to 0.32 ms**,
 and it includes the CPU graph build of one small operation. Extra kernels
 inside one `eval` cost about 0.004 ms each, so the round trip dominates.
+
+**The floor is not a constant. It tracks the CPU load.** Three runs of
+`stage_roofline.py` on 30 August 2026, minutes apart, measured 0.3049,
+0.1468 and 0.3214 ms, while `mysqld` held 96% of one CPU. The round trip is
+CPU-side work, so a busy machine raises it. Measure it in the same run that
+uses it, and never carry a floor from an earlier run.
 
 Subtract this floor from any timing of a single operation. At shape 2 the
 whole model is 0.75 ms, which is four round trips, so every stage of that

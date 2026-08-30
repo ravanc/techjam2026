@@ -165,7 +165,7 @@ what each turn measured.
 |---|---|
 | `torch_transformer_benchmark.py` | The baseline model, the MLX model, and the harness |
 | `steel_attention.py` | MLX's flash attention kernel, compiled at a `head_dim` MLX does not ship |
-| `steel_gemm.py` | MLX's steel GEMM, with epilogues MLX does not expose: GELU (row 33) and the LayerNorm (row 46) |
+| `steel_gemm.py` | MLX's steel GEMM, with epilogues MLX does not expose: GELU (row 33), the LayerNorm (row 46) and the row statistics (row 47) |
 | `fast_layernorm.py` | A single-pass LayerNorm for a row width under 256, the row 36 `pre_bias` hook, and the row 46 statistics kernel |
 | `scoreboard.py` | The graded run over all 13 shapes |
 | `flops.py` | The FLOP model and the measured matmul rates |
@@ -178,6 +178,8 @@ what each turn measured.
 | `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel |
 | `profiling/tile_probe.py` | What a GEMM tile costs, when a fusion forces the tile. It killed row 43 |
 | `profiling/ln_absorb_probe.py` | The accuracy screen for row 46, against a float64 reference |
+| `profiling/ln_tiled_stats_probe.py` | The accuracy screen for row 47: a tiled reduction against a float64 reference |
+| `profiling/plan_ab.py` | A/B one `KernelPlan` field in one process, interleaved. Use it on a shape under 2 ms, where a sweep cannot decide |
 | `agent_loop.md` | The optimization loop: the screens, the four gates, and the run log |
 | `references/` | Measured facts: the machine, the shapes, the MLX kernels, the scoreboard |
 

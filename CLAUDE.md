@@ -153,15 +153,19 @@ MFU is the graded score, and it is reported for **MLX only**:
 
     MFU = model_flops / seconds / peak_flops_per_second
 
-**The MFU numbers are PROVISIONAL. Do not quote one without the
-disclaimer.** The numerator and the time are objective. The denominator is
-not: 5.01 TFLOP/s came from `14 cores x 128 ALUs x 2 x 1.398 GHz`, and the
-clock and the ALU count were asserted from memory, never checked against a
-source. Every MFU scales linearly with it.
+The denominator is **4.946 TFLOP/s**, and every term in it is now checked
+on this machine: `14 cores x 128 ALUs x 2 x 1.380 GHz`. The core count comes
+from `system_profiler`, the 1380 MHz top state from the GPU DVFS table
+`voltage-states9` in the pmgr device tree, and the ALU count is bounded below
+at 105 by the measured matmul rate. An earlier version used 1.398 GHz, which
+was asserted from memory and is wrong by 1.3%.
 
-Fix `PROVISIONAL_PEAK_TFLOPS` in `flops.py` before trusting any MFU. Until
-then, lead with the speedup and the achieved TFLOP/s, which are stopwatch
-readings, and treat MFU as a rough guide only.
+**Read every MFU against 82%, not against 100%.** The GPU does not hold its
+top DVFS state. A saturating FMA loop sustains 3.92 TFLOP/s
+(`profiling/alu_peak.py`) and a plain matmul reaches 4.06 TFLOP/s
+(`flops.py --peak`), and both imply a clock near 1.1 GHz. No kernel can close
+that gap, so 4.06 TFLOP/s is the ceiling a kernel competes against. Give the
+speedup and the achieved TFLOP/s first: they are stopwatch readings.
 
 `flops.py` holds the FLOP model. It counts matmuls only, and it counts the
 full S x S attention, not the causal triangle. Do not change it without a

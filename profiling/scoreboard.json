@@ -8,17 +8,16 @@
     "torch_cpu_float32": 1.42
   },
   "torch_version": "2.13.0",
-  "elapsed_seconds": 179.70669374999125,
+  "elapsed_seconds": 187.2167068750132,
   "summary": {
     "cases_scored": 13,
-    "median_speedup_mlx": 12.966234892417758,
-    "min_speedup_mlx": 2.8456988965748637,
-    "max_speedup_mlx": 46.769819044439174,
-    "median_tflops_mlx": 2.3424166321028057,
-    "max_tflops_mlx": 4.475624028993207
+    "median_speedup_mlx": 13.335055888830194,
+    "min_speedup_mlx": 2.5491827850114306,
+    "max_speedup_mlx": 49.62714744787854,
+    "median_tflops_mlx": 2.524595401703953,
+    "max_tflops_mlx": 4.749055227198336
   },
   "cpu_cached_cases": [
-    1,
     2,
     3,
     4,
@@ -46,23 +45,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
-        "cpu": 44.8575,
-        "mps": 17.403520999999998,
-        "mlx": 3.4595624999999997
+        "cpu": 44.226833,
+        "mps": 17.1884375,
+        "mlx": 3.3165839999999998
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.577495668836209,
-        "mlx": 12.966234892417758
+        "mps": 2.573057207788666,
+        "mlx": 13.335055888830194
       },
       "tflops": {
-        "cpu": 0.19149383251407232,
-        "mps": 0.4935745239138678,
-        "mlx": 2.4829540128267666
+        "cpu": 0.19422450149211454,
+        "mps": 0.4997507534934458,
+        "mlx": 2.5899945823775306
       },
       "accuracy": {
         "mps": {
@@ -79,18 +78,7 @@
         }
       },
       "failed": {},
-      "cached": {
-        "cpu": {
-          "measured_at": "2026-08-30T11:21:07",
-          "uses": 2,
-          "limit": 5,
-          "git": {
-            "commit": "b352c4f",
-            "branch": "master",
-            "dirty": true
-          }
-        }
-      }
+      "cached": {}
     },
     {
       "case_id": 2,
@@ -105,23 +93,23 @@
       },
       "flops": 134217728,
       "tokens": 128,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=none fuse_ln_qkv=none fuse_ln_ffn=none",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=none fuse_ln_qkv=none fuse_ln_ffn=none stats_out=none stats_ffn=none",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 1.602958,
-        "mps": 1.593562,
-        "mlx": 0.5632915000000001
+        "mps": 1.5586465,
+        "mlx": 0.6288125
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 1.0058962249350827,
-        "mlx": 2.8456988965748637
+        "mps": 1.0284294739057254,
+        "mlx": 2.5491827850114306
       },
       "tflops": {
         "cpu": 0.08373128179278558,
-        "mps": 0.08422498026433864,
-        "mlx": 0.23827401620652894
+        "mps": 0.0861117180836065,
+        "mlx": 0.21344634211311
       },
       "accuracy": {
         "mps": {
@@ -141,7 +129,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:21:08",
-          "uses": 2,
+          "uses": 5,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -164,23 +152,23 @@
       },
       "flops": 536870912,
       "tokens": 512,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 4.7878335,
-        "mps": 1.9601250000000001,
-        "mlx": 0.63175
+        "mps": 1.947354,
+        "mlx": 0.6261875
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.442616414769466,
-        "mlx": 7.578683814800157
+        "mps": 2.458635409894657,
+        "mlx": 7.646006188242339
       },
       "tflops": {
         "cpu": 0.11213232707444819,
-        "mps": 0.2738962627383458,
-        "mlx": 0.8498154523149979
+        "mps": 0.27569250993912764,
+        "mlx": 0.8573644667132448
       },
       "accuracy": {
         "mps": {
@@ -191,7 +179,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.1920928955078125e-06,
           "failed_elements": 0,
           "total_elements": 65536
         }
@@ -200,7 +188,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:21:09",
-          "uses": 2,
+          "uses": 5,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -223,23 +211,23 @@
       },
       "flops": 2147483648,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 12.9644585,
-        "mps": 4.7482705,
-        "mlx": 1.1974375
+        "mps": 4.5433335,
+        "mlx": 1.1664374999999998
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.7303538204068194,
-        "mlx": 10.82683522104494
+        "mps": 2.8535124044933085,
+        "mlx": 11.114576220328994
       },
       "tflops": {
         "cpu": 0.16564391393593494,
-        "mps": 0.4522664932421184,
-        "mlx": 1.793399361553317
+        "mps": 0.4726669631450124,
+        "mlx": 1.8410619068745653
       },
       "accuracy": {
         "mps": {
@@ -250,7 +238,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.430511474609375e-06,
+          "max_abs_error": 1.3113021850585938e-06,
           "failed_elements": 0,
           "total_elements": 262144
         }
@@ -259,7 +247,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:21:12",
-          "uses": 2,
+          "uses": 5,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -282,23 +270,23 @@
       },
       "flops": 17179869184,
       "tokens": 16384,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 23,
       "rounds": 3,
       "median_ms": {
         "cpu": 120.621167,
-        "mps": 34.021375,
-        "mlx": 7.234958
+        "mps": 33.361166,
+        "mlx": 6.044291
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.5454524398264327,
-        "mlx": 16.671992705417225
+        "mps": 3.615616042916486,
+        "mlx": 19.956214384780612
       },
       "tflops": {
         "cpu": 0.1424283118069982,
-        "mps": 0.5049728055964816,
-        "mlx": 2.374563775491164
+        "mps": 0.5149660891348942,
+        "mlx": 2.8423299248828355
       },
       "accuracy": {
         "mps": {
@@ -318,7 +306,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:21:25",
-          "uses": 2,
+          "uses": 5,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -341,23 +329,23 @@
       },
       "flops": 1342177280000,
       "tokens": 1280000,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
-        "cpu": 15777.20425,
-        "mps": 2604.114667,
-        "mlx": 480.809917
+        "cpu": 14946.866584,
+        "mps": 2687.947959,
+        "mlx": 456.8755
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 6.058567408698521,
-        "mlx": 32.81380789406638
+        "mps": 5.560697904865947,
+        "mlx": 32.71540405208859
       },
       "tflops": {
-        "cpu": 0.08507066643318634,
-        "mps": 0.5154063670883661,
-        "mlx": 2.791492505758778
+        "cpu": 0.08979656521700308,
+        "mps": 0.49933157206634743,
+        "mlx": 2.93773091356398
       },
       "accuracy": {
         "mps": {
@@ -368,7 +356,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 2.1457672119140625e-06,
+          "max_abs_error": 1.9073486328125e-06,
           "failed_elements": 0,
           "total_elements": 163840000
         }
@@ -376,13 +364,13 @@
       "failed": {},
       "cached": {
         "cpu": {
-          "measured_at": "2026-08-29T21:38:22",
-          "uses": 4,
+          "measured_at": "2026-08-30T12:14:10",
+          "uses": 1,
           "limit": 5,
           "git": {
-            "commit": "f43a374",
+            "commit": "32a7aa7",
             "branch": "master",
-            "dirty": false
+            "dirty": true
           }
         }
       }
@@ -400,23 +388,23 @@
       },
       "flops": 939524096,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=64x32x16x2x2 fuse_ln_qkv=64x32x16x2x2 fuse_ln_ffn=64x32x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=64x32x16x2x2 fuse_ln_qkv=64x32x16x2x2 fuse_ln_ffn=64x32x16x2x2 stats_out=64x32x16x2x2 stats_ffn=64x32x16x2x2",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 27.904145999999997,
-        "mps": 11.381729,
-        "mlx": 1.0698750000000001
+        "mps": 11.232042,
+        "mlx": 1.019125
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.451661430350345,
-        "mlx": 26.081688047669115
+        "mps": 2.48433419319479,
+        "mlx": 27.380494051269466
       },
       "tflops": {
         "cpu": 0.03366969539221878,
-        "mps": 0.0825466935647475,
-        "mlx": 0.8781624918798925
+        "mps": 0.08364677553734219,
+        "mlx": 0.9218928943947013
       },
       "accuracy": {
         "mps": {
@@ -427,7 +415,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 1.0728836059570312e-06,
+          "max_abs_error": 1.1920928955078125e-06,
           "failed_elements": 0,
           "total_elements": 262144
         }
@@ -436,7 +424,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:24:43",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -459,23 +447,23 @@
       },
       "flops": 429496729600,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
         "cpu": 470.781958,
-        "mps": 166.892084,
-        "mlx": 120.164125
+        "mps": 164.881167,
+        "mlx": 117.722208
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 2.820876501248555,
-        "mlx": 3.917824542058622
+        "mps": 2.855280360794632,
+        "mlx": 3.999092150904951
       },
       "tflops": {
         "cpu": 0.9123049902434877,
-        "mps": 2.5734997089496465,
-        "mlx": 3.574250880618487
+        "mps": 2.604886521697169,
+        "mlx": 3.6483917257141494
       },
       "accuracy": {
         "mps": {
@@ -486,7 +474,7 @@
         },
         "mlx": {
           "passed": true,
-          "max_abs_error": 3.2186508178710938e-06,
+          "max_abs_error": 3.4570693969726562e-06,
           "failed_elements": 0,
           "total_elements": 8388608
         }
@@ -495,7 +483,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:20:40",
-          "uses": 3,
+          "uses": 5,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -518,23 +506,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 35.9612915,
-        "mps": 8.2711455,
-        "mlx": 3.667125
+        "mps": 8.0448545,
+        "mlx": 3.5205625
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 4.347800616008993,
-        "mlx": 9.806399154651123
+        "mps": 4.470098433725558,
+        "mlx": 10.214643682650145
       },
       "tflops": {
         "cpu": 0.2388661317127612,
-        "mps": 1.0385423146044284,
-        "mlx": 2.3424166321028057
+        "mps": 1.0677551212392966,
+        "mlx": 2.4399324232988335
       },
       "accuracy": {
         "mps": {
@@ -554,7 +542,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:24:56",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -577,23 +565,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 51.488208,
-        "mps": 13.063333499999999,
-        "mlx": 3.5816665
+        "mps": 12.8033125,
+        "mlx": 3.4024995000000002
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.941429498068009,
-        "mlx": 14.37548917522053
+        "mps": 4.021475536116141,
+        "mlx": 15.13246600036238
       },
       "tflops": {
         "cpu": 0.1668330463550023,
-        "mps": 0.6575606901561535,
-        "mlx": 2.3983066519454006
+        "mps": 0.6709150145323719,
+        "mlx": 2.524595401703953
       },
       "accuracy": {
         "mps": {
@@ -613,7 +601,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:25:06",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -636,23 +624,23 @@
       },
       "flops": 8589934592,
       "tokens": 8192,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 46,
       "rounds": 3,
       "median_ms": {
         "cpu": 141.3387295,
-        "mps": 42.156229499999995,
-        "mlx": 3.7136875
+        "mps": 42.0390625,
+        "mlx": 3.395792
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.352736503628723,
-        "mlx": 38.058864538279
+        "mps": 3.3620809098680544,
+        "mlx": 41.621727567530634
       },
       "tflops": {
         "cpu": 0.060775518659236284,
-        "mps": 0.20376429993579004,
-        "mlx": 2.3130472318955215
+        "mps": 0.20433221107154803,
+        "mlx": 2.5295820804101075
       },
       "accuracy": {
         "mps": {
@@ -672,7 +660,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:25:34",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -695,23 +683,23 @@
       },
       "flops": 1744830464,
       "tokens": 2048,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 50,
       "rounds": 3,
       "median_ms": {
         "cpu": 12.793771,
-        "mps": 3.3062705,
-        "mlx": 1.1333335
+        "mps": 3.412354,
+        "mlx": 1.2026455
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.869547576340169,
-        "mlx": 11.288619810497087
+        "mps": 3.7492508104376037,
+        "mlx": 10.638023424192747
       },
       "tflops": {
         "cpu": 0.13638124865608428,
-        "mps": 0.5277337301953968,
-        "mlx": 1.539556065359402
+        "mps": 0.5113275070523163,
+        "mlx": 1.4508269178240802
       },
       "accuracy": {
         "mps": {
@@ -731,7 +719,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:25:37",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",
@@ -754,23 +742,23 @@
       },
       "flops": 188978561024,
       "tokens": 65536,
-      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2",
+      "plan": "fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 stats_out=32x64x16x2x2 stats_ffn=32x64x16x2x2",
       "repeats": 3,
       "rounds": 3,
       "median_ms": {
         "cpu": 1974.806875,
-        "mps": 569.698583,
-        "mlx": 42.223958
+        "mps": 562.311333,
+        "mlx": 39.792875
       },
       "speedup_vs_cpu": {
         "cpu": 1.0,
-        "mps": 3.4664065067544674,
-        "mlx": 46.769819044439174
+        "mps": 3.5119457124653044,
+        "mlx": 49.62714744787854
       },
       "tflops": {
         "cpu": 0.0956947048424672,
-        "mps": 0.3317167475278765,
-        "mlx": 4.475624028993207
+        "mps": 0.33607460837713543,
+        "mlx": 4.749055227198336
       },
       "accuracy": {
         "mps": {
@@ -790,7 +778,7 @@
       "cached": {
         "cpu": {
           "measured_at": "2026-08-30T11:26:17",
-          "uses": 2,
+          "uses": 4,
           "limit": 5,
           "git": {
             "commit": "b352c4f",

@@ -21,6 +21,18 @@ For each stage it reports:
     limit       the larger of %comp and %mem names the limit. When both are
                 small the stage is LAUNCH bound: it does not fill the GPU.
 
+**THE FLOOR MOVES BETWEEN RUNS, SO `ms` IS NOT REPRODUCIBLE FOR A SMALL
+STAGE.** `measure_floor()` runs once per invocation, and three runs on
+30 August 2026, minutes apart, gave 0.3049, 0.1468 and 0.3214 ms. That
+0.17 ms spread is subtracted from every stage. A large stage does not care:
+the shape 8 `qkv proj` raw time repeated to 0.1% and every stage above 1 ms
+repeated within 5%. A small stage cares completely: the shape 8 `ln1 stats`
+read 0.2602 ms in one run and 0.0691 ms in the next, from the floor alone.
+
+So **`raw` is the reproducible column. `ms` is derived.** Rank a small stage
+by `raw`, and never quote a rate taken from a sub-floor `ms` (that is where
+the 380% `%mem` readings come from).
+
 **%mem READS HIGH, AND CAN PASS 100%.** `ms` has FLOOR_MS subtracted, and
 GB/s comes from `ms`. PEAK_GBPS does NOT have it subtracted: it is a raw
 `x * 2.0` reading. So the two sides of the ratio are measured differently,
@@ -232,10 +244,18 @@ def profile_shape(index: int, repeats: int) -> Optional[Dict]:
     carry = layer["ob"].astype(mx.float32) if defer else None
 
     def do_norm(value, wkey, bkey):
-        if defer:
-            return norm_kernel(value, layer[wkey], layer[bkey],
-                               LAYER_NORM_EPS, pre_bias=carry)
-        return norm_kernel(value, layer[wkey], layer[bkey], LAYER_NORM_EPS)
+        pre = carry if defer else None
+        if pre is not None and not plan.fast_layer_norm:
+            # Row 37. `mx.fast.layer_norm` has no `pre_bias`, so the model
+            # adds the carry to the activation instead. Follow the model, or
+            # this call raises a TypeError on every shape that defers the
+            # bias without `fast_layernorm`, such as shape 8.
+            value = value + pre
+            pre = None
+        if pre is None:
+            return norm_kernel(value, layer[wkey], layer[bkey], LAYER_NORM_EPS)
+        return norm_kernel(value, layer[wkey], layer[bkey],
+                           LAYER_NORM_EPS, pre_bias=pre)
 
     # Row 46. When the plan folds the LayerNorm into the GEMM below it, the
     # model runs a statistics kernel and NOT a LayerNorm, and the GEMM takes
@@ -573,9 +593,12 @@ def print_report(result: Dict) -> None:
     print("")
     print("`ms` has the %.4f ms eval+synchronize round trip removed; `raw` has not."
           % result["floor_ms"])
-    print("The isolated sum is larger than the real layer because the GPU overlaps")
-    print("the layers. mx.compile does NOT fuse the elementwise stages: measured")
-    print("1.00x against eager for addmm+gelu and for add+LayerNorm. See WORKFLOW.md.")
+    print("The two sums BRACKET the real layer: `raw` sum > real > `ms` sum. The")
+    print("`ms` sum removes the floor once per stage, and the real model pays it")
+    print("once for the forward, so `ms` under-counts by about 9 x floor. Compare")
+    print("the RAW sum against the real layer. mx.compile does NOT fuse the")
+    print("elementwise stages: measured 1.00x against eager for addmm+gelu and")
+    print("for add+LayerNorm. See WORKFLOW.md.")
     print("sdpa peak memory: %.1f MiB allocated. Operands+output alone would be %.1f MiB."
           % (result["sdpa_peak_mib"], result["operand_only_mib"]))
     print("   The full B x H x S x S score matrix is %.1f MiB. A delta near the"

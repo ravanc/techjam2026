@@ -99,8 +99,9 @@ work twice. Do not delete a row.
 
 ## The mapping — the article against this repository
 
-The article lists eight optimizations. Five of them are already KEPT here,
-under a different name. Three are open. One principle has no row yet.
+The article lists eight optimizations. Read the status column of
+`OPTIMIZATIONS.md` before you trust this table; the table below is a map from
+the article to a row number, not a second source of truth.
 
 | Article | What it does | Row here | Status |
 |---|---|---|---|
@@ -109,10 +110,10 @@ under a different name. Three are open. One principle has no row yet.
 | #6 Fused SwiGLU + quantization | fold the activation into the GEMM, so the pre-activation never reaches DRAM | 33 | **KEPT** |
 | #7 Gated residual normalization | one kernel for the residual add and the norm | 36 | **KEPT** |
 | Per-kernel optimization loop | tune the tile and the block shape | 38 | **REVERTED** |
-| **#3 Normalization + quantization fusion** | the norm writes a large tensor that the next kernel reads back. Fuse them | **43** | **OPEN** |
-| **Model level: remove intermediate materialization** | chain two GEMMs, so the middle tensor stays in the threadgroup | **44** | **OPEN** |
-| **Extend a win to the shape it misses** | Qwen-Image and FLUX.2 got the same kernels, at different gates | **37** | **OPEN** |
-| **#1 Prepacked scales, moved to load time** | stop recomputing a constant on every call | **45**, new | **OPEN** |
+| **#3 Normalization + quantization fusion** | the norm writes a large tensor that the next kernel reads back. Fuse them | 43 REVERTED, then **46** | **KEPT, 1.060x.** Row 47 takes the same principle one level further and is OPEN |
+| **Model level: remove intermediate materialization** | chain two GEMMs, so the middle tensor stays in the threadgroup | **44** | **REVERTED.** Built, correct, 0.969x |
+| **Extend a win to the shape it misses** | Qwen-Image and FLUX.2 got the same kernels, at different gates | **37** | **KEPT.** Shape 8 1.042x, and it needed no new kernel |
+| **#1 Prepacked scales, moved to load time** | stop recomputing a constant on every call | **45**, new | **OPEN**, and mostly delivered by row 46's weight build. What is left is 0.1% FLOP-weighted |
 
 Two article optimizations have no analogue here, and the loop will not chase
 them:
@@ -125,6 +126,11 @@ them:
   not change.
 
 ## The queue
+
+**SUPERSEDED. The live queue is "The queue, after turn 7" at the end of this
+file.** This section is what the loop believed at turn 3, and the run log
+below shows how each row was decided. Keep it for the reasoning, not for the
+order.
 
 Ranked by FLOP weighted value, not by size of the number.
 
@@ -498,3 +504,139 @@ the gate, which is what kept it.
 The loop cost four screens to find one 1.060x. Two of the four screens were
 negative, and that is the point: route 1 would have been days of kernel work
 for a 1.19x slowdown.
+
+### Turn 7 — the roofline re-measure, and the queue refills
+
+The queue was empty, so the loop ran the first of the two moves it left
+itself: re-measure the stage roofline, because rows 46 and 37 changed the
+block and layer 1 of this loop reads that table.
+
+    .venv/bin/python3 profiling/stage_roofline.py --shapes 1,6,8,13
+
+**The tool crashed first, and the crash is itself a finding.** Shape 8 raised
+`TypeError` in `do_norm()`. Row 37 changed `plan_kernels()` so that
+`defer_bias` no longer implies `fast_layer_norm`, and shape 8 is the one
+shape that now defers WITHOUT it. `mx.fast.layer_norm` takes no `pre_bias`.
+The model was correct; the profiler still held the old call. Fixed by
+copying the model's own branch into the tool. **A tool that follows the plan
+must be updated in the same change as the plan.**
+
+**What the block looks like now.** Shape 6, floor 0.3214 ms:
+
+| stage | ms | raw | limit | %roof |
+|---|---:|---:|---|---:|
+| qkv proj (+layer norm) | 3.321 | 3.642 | COMPUTE | 95.6 |
+| sdpa | 2.021 | 2.342 | IO | 103.8 |
+| out proj (+residual) | 1.494 | 1.815 | IO | 105.3 |
+| ffn_out (+residual) | 1.435 | 1.756 | IO | 109.7 |
+| ffn_in + gelu (+layer norm) | 1.278 | 1.599 | COMPUTE | 82.8 |
+| ln1 stats + ln2 stats | 0.668 | 1.311 | IO | at the roof |
+
+**Every stage of shape 6 now sits at a roof.** The only stage under 90% of
+its own roof is `ffn_in` at 82.8% of compute. Shape 8 is stronger still: four
+GEMMs at 99-101% of the matmul peak carry 25.2 ms of its 30.18 ms layer.
+
+So layer 2 of this loop (tune a kernel) has nothing left to tune. Question 3
+of layer 1 answers the whole table: a stage at the roof can only get faster
+by moving fewer bytes.
+
+**The one stage that can lose bytes: row 47, NEW.** The two
+`layer_norm_stats` passes read 65.0 MiB each to write two floats for each
+row, and every byte they read was written by a GEMM one stage earlier
+(`ffn_out` of the layer below for `ln1`, `out proj` of the same layer for
+`ln2`). Put the reduction in that GEMM's epilogue and the read disappears:
+**5.5% of shape 6, 0.6% of shape 8, about 3.8% FLOP-weighted.** Written up
+as row 47, with the tiled-partials design that avoids both `bn = ffn_dim`
+(row 44 killed it) and float atomics (the padding gate checks bit equality).
+
+**Row 45 was OPEN in this file and MISSING from the source of truth table.**
+CLAUDE.md says the table is the only place that states a status. Added, with
+the correction that row 46 already delivered most of it at weight build time.
+
+**Three reference corrections, all forced by the readings:**
+
+1. **The floor is not 0.13 to 0.17 ms and it is not a constant.** Three runs
+   minutes apart gave 0.3049, 0.1468 and 0.3214 ms, while `mysqld` held 96%
+   of one CPU. The round trip is CPU-side work. `references/machine.md` now
+   says 0.15 to 0.32 ms and says to measure it in the run that uses it.
+2. **`raw` is the reproducible column, `ms` is derived.** The floor comes off
+   every stage, so a sub-floor stage is noise: shape 8 `ln1 stats` read
+   0.2602 ms in one run and 0.0691 ms in the next, from the floor alone,
+   which is where the 380% `%mem` readings come from. Every stage above 1 ms
+   repeated within 5%, and shape 8 `qkv proj` within 0.1%.
+3. **"The sum of stages is larger than the real layer" is false as written.**
+   The two sums BRACKET the real layer, and the bracket held at all four
+   shapes:
+
+   | shape | `ms` sum | real per layer | `raw` sum |
+   |---:|---:|---:|---:|
+   | 1 | 0.438 | 0.846 | 2.326 |
+   | 6 | 10.215 | 12.070 | 12.552 |
+   | 8 | 28.042 | 30.180 | 30.664 |
+   | 13 | 8.574 | 10.381 | 10.917 |
+
+   The `ms` sum subtracts the floor once for each of 9 stages; the real model
+   pays it once for the forward. So `ms` under-counts by about 9 x floor.
+   **There is no unexplained gap in the shape 6 layer.** An earlier reading
+   of the same table looked like 2.0 ms of missing work, and it was the floor
+   accounting, not missing work.
+
+- **Gate:** not run. No model code changed. `stage_roofline.py`, `WORKFLOW.md`
+  and `machine.md` changed, and none of the three is in the forward path.
+- **Next:** the queue below.
+
+### Turn 8 — row 47: BUILT, gated, KEPT
+
+**1.075x FLOP-weighted.** MLX 686.6 ms to 638.7 ms over the 13 shapes.
+Shape 6 1.091x, shape 8 1.027x, shape 13 1.045x, against a 1.006x median MPS
+control. The queue's estimate was 3.8%; the measurement is 7.5%, because the
+estimate used the floor-subtracted `ms` column and the stage is really
+1.311 ms raw of a 12.552 ms shape 6 layer.
+
+**Two screens went first, and both were cheap.**
+
+1. `profiling/ln_tiled_stats_probe.py`, the accuracy screen. A tile cannot
+   centre against a mean it does not have, so the epilogue must use the
+   uncentred variance, which `fast_layernorm` refuses for a whole row. The
+   screen measured the residual drift of this model at **0.12 to 0.33**,
+   far below the cancellation regime, and the uncentred form then gives the
+   same projection error as today on shapes 6, 8 and 13. It also measured
+   Chan's stable combine and found it slightly WORSE at shape 8, so the
+   build took the simple form.
+2. A speed screen on `steel_addmm` with a matrix C operand. `out proj` and
+   `ffn_out` ran `mx.addmm`, so they had to move to the hoisted GEMM before
+   an epilogue could reach them. They tie (1.009x, 0.988x, 1.039x) and stay
+   bit exact, which repeats row 40's proof that MLX dispatches `addmm` to
+   this same kernel.
+
+**What row 44 taught, and this row used.** Row 44 died on threadgroup
+memory. This epilogue spends none: the four lanes of one MMA fragment row
+are `lane`, `lane ^ 1`, `lane ^ 8` and `lane ^ 9`, so two `simd_shuffle_xor`
+steps reduce a row with no barrier.
+
+The queue is empty again except for row 45, which is under the noise floor.
+
+## The queue, after turn 8
+
+| Order | Row | What | Estimated value | Risk |
+|---:|---:|---|---|---|
+| 1 | 45 | Build the deferred bias `carry` at weight build time | about 0.1% FLOP-weighted, under the noise floor | low. Row 46 already did most of it |
+
+Row 47 is done. Rows 16, 19, 21 and 22 stay out of reach: 16 cannot pass the
+tolerance, 21 waits for an MLX upgrade, and 19 and 22 apply to no appendix
+shape. The next real prize needs a new roofline: run
+`profiling/stage_roofline.py` again, and read every row EXCEPT `ln1 stats`
+and `ln2 stats`, which row 47 made stale.
+
+## The queue, after turn 7
+
+| Order | Row | What | Estimated value | Risk |
+|---:|---:|---|---|---|
+| 1 | — | Fix `PROVISIONAL_PEAK_TFLOPS` in `flops.py` | no speed at all. It is the GRADED metric, and every MFU scales with a constant asserted from memory and never checked | none. It is a source lookup, not a kernel |
+| 2 | 47 | Produce the LayerNorm statistics in the producing GEMM's epilogue | **3.8% FLOP-weighted**, upper bound | high. A row spans several N tiles, so the reduction crosses threadgroups. Screen the accuracy first |
+| 3 | 45 | Build the deferred bias `carry` at weight build time | about 0.1% FLOP-weighted, under the noise floor | low. Row 46 already did most of it |
+
+Item 1 leads on value for the grade, not on speed. Items 2 and 3 are the only
+rows in `OPTIMIZATIONS.md` that are OPEN and reachable: 16 cannot pass the
+tolerance, 21 waits for an MLX upgrade, and 19 and 22 apply to no appendix
+shape.

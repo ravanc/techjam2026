@@ -244,6 +244,12 @@ class KernelPlan:
     # not the other.
     fuse_ln_qkv: Optional[Tuple[int, int, int, int, int]] = None
     fuse_ln_ffn: Optional[Tuple[int, int, int, int, int]] = None
+    # Row 47. The tile for the two GEMMs that WRITE the activation the
+    # statistics run over: `out proj` feeds `ln2` of the same layer, and
+    # `ffn_out` feeds `ln1` of the next one. None keeps the separate
+    # statistics kernel.
+    fuse_stats_out: Optional[Tuple[int, int, int, int, int]] = None
+    fuse_stats_ffn: Optional[Tuple[int, int, int, int, int]] = None
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -257,7 +263,9 @@ class KernelPlan:
             f"defer_bias={self.defer_bias} "
             f"fuse_gelu={'x'.join(map(str, self.fuse_gelu)) if self.fuse_gelu else 'none'} "
             f"fuse_ln_qkv={'x'.join(map(str, self.fuse_ln_qkv)) if self.fuse_ln_qkv else 'none'} "
-            f"fuse_ln_ffn={'x'.join(map(str, self.fuse_ln_ffn)) if self.fuse_ln_ffn else 'none'}"
+            f"fuse_ln_ffn={'x'.join(map(str, self.fuse_ln_ffn)) if self.fuse_ln_ffn else 'none'} "
+            f"stats_out={'x'.join(map(str, self.fuse_stats_out)) if self.fuse_stats_out else 'none'} "
+            f"stats_ffn={'x'.join(map(str, self.fuse_stats_ffn)) if self.fuse_stats_ffn else 'none'}"
         )
 
 
@@ -356,6 +364,12 @@ from fast_layernorm import supports_stats as layer_norm_stats_supports
 # LayerNorm then writes two floats for each row instead of a whole
 # activation. See OPTIMIZATIONS.md row 46.
 from steel_gemm import layer_norm_constants
+
+# Row 47. Row 46 left one pass behind: a statistics kernel that reads a whole
+# activation to write two floats for each row. The GEMM that wrote that
+# activation holds it in registers, so its epilogue takes the statistics and
+# the read never happens. See OPTIMIZATIONS.md row 47.
+from steel_gemm import row_stats_reduce
 
 SDPA_FUSED_HEAD_DIMS = (64, 72, 80, 96, 128)
 SDPA_FUSED_MIN_HEAD_DIM = SDPA_FUSED_HEAD_DIMS[0]
@@ -567,6 +581,33 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     use_defer_bias = use_fast_ln or (
         fuse_ln_qkv is not None and fuse_ln_ffn is not None)
 
+    # Row 47. Take the statistics in the epilogue of the GEMM that writes the
+    # activation, and delete the pass that reads it back.
+    #
+    # Each GEMM is gated on the row 46 tile that CONSUMES its statistics.
+    # There is no point producing a pair that nothing reads:
+    #
+    #   `out proj` writes the input of `ln2`, so it needs `fuse_ln_ffn`
+    #   `ffn_out`  writes the input of `ln1` of the NEXT layer, so it needs
+    #              `fuse_ln_qkv`
+    #
+    # Both also need `use_defer_bias`. Without it the residual add is a
+    # separate operation, so the GEMM output is not the activation the
+    # LayerNorm runs over, and the epilogue would take the statistics of the
+    # wrong array.
+    #
+    # Both GEMMs have N = d_model. Their K differs, so they take their tiles
+    # apart: `out proj` reads d_model and `ffn_out` reads ffn_dim.
+    fuse_stats_out = None
+    fuse_stats_ffn = None
+    if itemsize == 4 and use_defer_bias and rows >= MIN_FUSED_GELU_ROWS:
+        if fuse_ln_ffn is not None:
+            fuse_stats_out = steel_gemm_tile(
+                rows, config.d_model, config.d_model)
+        if fuse_ln_qkv is not None:
+            fuse_stats_ffn = steel_gemm_tile(
+                rows, config.d_model, config.ffn_dim)
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
@@ -578,6 +619,8 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         fuse_gelu=fuse_gelu,
         fuse_ln_qkv=fuse_ln_qkv,
         fuse_ln_ffn=fuse_ln_ffn,
+        fuse_stats_out=fuse_stats_out,
+        fuse_stats_ffn=fuse_stats_ffn,
     )
 
 
@@ -766,11 +809,24 @@ def _mlx_transformer(
     fuse_ln_qkv = None if plain else plan.fuse_ln_qkv
     fuse_ln_ffn = None if plain else plan.fuse_ln_ffn
 
-    for layer in layers:
+    # Row 47. The GEMM that writes the activation also takes its statistics,
+    # so the pass that read the activation back disappears.
+    #
+    # `pending` holds the pair that the PREVIOUS layer's `ffn_out` produced.
+    # `ln1` of layer 0 has no GEMM above it, and the final LayerNorm is a
+    # plain LayerNorm, so the first `ln1` and the last `ffn_out` stay as they
+    # are. Everything between them is free.
+    stats_out = None if plain else plan.fuse_stats_out
+    stats_ffn = None if plain else plan.fuse_stats_ffn
+    pending = None
+    last_index = len(layers) - 1
+
+    for index, layer in enumerate(layers):
         if fuse_ln_qkv is not None:
             # `x` goes in RAW. The statistics carry the only part of the
             # LayerNorm that depends on the data.
-            stats = layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry)
+            stats = pending if pending is not None else layer_norm_stats(
+                x, LAYER_NORM_EPS, pre_bias=carry)
             bm, bn, bk, wm, wn = fuse_ln_qkv
             fused = steel_addmm(
                 layer["ln1c3"], x, layer["ln1w"], transpose_b=False,
@@ -812,13 +868,26 @@ def _mlx_transformer(
         # valid position. The mask at the end of the block removes it. A NaN
         # from a fully masked query row goes the same way, because `mx.where`
         # selects a value and does not calculate one.
+        ln2_stats = None
         if defer:
             # `mx.addmm(x, ...)` is `x + context @ ow.T`. The steel GEMM
             # applies C from the accumulator tile, so the residual add costs
             # 0.31 ms here against 1.53 ms as its own kernel, at shape 6.
-            x = mx.addmm(x, context, layer["ow"].T)
             ob = layer["ob"].astype(mx.float32)
+            # The statistics of `ln2` run over `x + carry` AFTER this bias
+            # joins the carry, so update the carry first.
             carry = ob if carry is None else carry + ob
+            if stats_out is not None:
+                # `ow` is [N, K], the torch Linear layout, so pass it whole.
+                bm, bn, bk, wm, wn = stats_out
+                x, partials = steel_addmm(
+                    x, context, layer["ow"], transpose_b=True,
+                    bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                    row_stats=True, row_carry=carry)
+                ln2_stats = row_stats_reduce(
+                    partials, d_model, LAYER_NORM_EPS)
+            else:
+                x = mx.addmm(x, context, layer["ow"].T)
         else:
             x = x + mx.addmm(layer["ob"], context, layer["ow"].T)
 
@@ -826,7 +895,8 @@ def _mlx_transformer(
             # One kernel for LayerNorm, GEMM and GELU. `fiw` is [ffn_dim,
             # d_model], the [N, K] layout the kernel takes, so the prepacked
             # weight keeps that layout and needs no `.T`.
-            stats = layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry)
+            stats = ln2_stats if ln2_stats is not None else layer_norm_stats(
+                x, LAYER_NORM_EPS, pre_bias=carry)
             bm, bn, bk, wm, wn = fuse_ln_ffn
             h = steel_addmm(
                 layer["ln2c3"], x, layer["ln2w"], transpose_b=True, gelu=True,
@@ -844,9 +914,22 @@ def _mlx_transformer(
         else:
             h = norm(x, layer["n2w"], layer["n2b"], carry)
             h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
+        pending = None
         if defer:
-            x = mx.addmm(x, h, layer["fow"].T)
             carry = carry + layer["fob"].astype(mx.float32)
+            # The LAST `ffn_out` has no `ln1` below it, only the final
+            # LayerNorm, which is a plain LayerNorm. So it takes no
+            # statistics.
+            if stats_ffn is not None and index != last_index:
+                bm, bn, bk, wm, wn = stats_ffn
+                x, partials = steel_addmm(
+                    x, h, layer["fow"], transpose_b=True,
+                    bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                    row_stats=True, row_carry=carry)
+                pending = row_stats_reduce(
+                    partials, d_model, LAYER_NORM_EPS)
+            else:
+                x = mx.addmm(x, h, layer["fow"].T)
         else:
             x = x + mx.addmm(layer["fob"], h, layer["fow"].T)
         if padded:

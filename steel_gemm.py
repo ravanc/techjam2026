@@ -165,6 +165,95 @@ _LN_EPILOGUE = """
 
 """
 
+# The row statistics epilogue of row 47. It is a second new method on
+# `BlockMMA`.
+#
+# Row 46 left one pass behind: `layer_norm_stats()` reads a whole activation
+# to write two floats for each row. That pass runs at the memory roof, so
+# only fewer bytes win it. Every activation it reads was written by a GEMM
+# one stage earlier, and that GEMM holds the value in registers at the store.
+# So this method takes the statistics there, and the read never happens.
+#
+# THE OBSTACLE, AND THE ANSWER
+#
+# A threadgroup owns one BN-wide tile of the row, not the whole row, so it
+# cannot centre against a mean it does not have. It therefore writes the RAW
+# sum and the RAW sum of squares, and a reduce kernel takes
+# `var = Q/D - mean^2`.
+#
+# `fast_layernorm` refuses that uncentred form for a whole row, because it
+# cancels when the row mean is large against the standard deviation.
+# `profiling/ln_tiled_stats_probe.py` measures the drift of this model and it
+# is 0.12 to 0.33, which is far below the cancellation regime. The probe
+# gives the same projection error as today on shapes 6, 8 and 13.
+#
+# THE LANE REDUCTION
+#
+# One fragment row lives in four lanes. `BaseMMAFrag::get_coord` gives
+# `fm = (qid & 4) + ((lane / 2) % 4)` with `qid = lane / 4`, so the four
+# lanes of one row are `lane`, `lane ^ 1`, `lane ^ 8` and `lane ^ 9`. Two
+# `simd_shuffle_xor` steps therefore reduce the row, with no threadgroup
+# memory and no barrier. Row 44 measured that threadgroup memory is the thing
+# to avoid here.
+#
+# The lane with `fn == 0` writes the pair. Two simdgroups cover each row of
+# the tile, one for each `simd_group_id % WN`, so the partials buffer holds
+# `WN * tiles_n` entries for each row. `row_stats_reduce()` sums them.
+#
+# The buffer is `[P][2][M]`, so the eight leader lanes of a simdgroup write
+# eight adjacent floats. A `[M][P][2]` layout would scatter them.
+#
+# It has NO bounds check, so the caller must use an aligned tile.
+_ROW_STATS_EPILOGUE = """
+  /* Row statistics epilogue. Added by steel_gemm.py. See OPTIMIZATIONS.md
+     row 47. */
+  METAL_FUNC void write_row_stats(
+      device U* part,
+      const device U* carry,
+      const int m_stride,
+      ushort simd_lane_id) thread {
+    // `carry` is the deferred residual bias of row 36. The statistics are
+    // taken over `x + carry`, exactly as `layer_norm_stats(pre_bias=)` takes
+    // them, and it costs one vector load for the tile.
+    carry += (sn);
+
+    // The four lanes of one fragment row are lane ^ 1 and lane ^ 8.
+    const bool leader = ((simd_lane_id % 2) == 0) &&
+                        (((simd_lane_id / 4) & 2) == 0);
+
+    STEEL_PRAGMA_UNROLL
+    for (short i = 0; i < TM; i++) {
+      U total = U(0);
+      U square = U(0);
+
+      STEEL_PRAGMA_UNROLL
+      for (short j = 0; j < TN; j++) {
+        thread auto& accum = Ctile.frag_at(i, j);
+        const int offset = j * TN_stride;
+
+        STEEL_PRAGMA_UNROLL
+        for (short k = 0; k < decltype(Ctile)::kElemsPerFrag; k++) {
+          const U v = accum[k] + carry[offset + k];
+          total += v;
+          square += v * v;
+        }
+      }
+
+      total += simd_shuffle_xor(total, 1);
+      total += simd_shuffle_xor(total, 8);
+      square += simd_shuffle_xor(square, 1);
+      square += simd_shuffle_xor(square, 8);
+
+      if (leader) {
+        const int row = sm + i * TM_stride;
+        part[row] = total;
+        part[m_stride + row] = square;
+      }
+    }
+  }
+
+"""
+
 
 def _read(rel: str) -> str:
     text = kernels_read(rel)
@@ -176,7 +265,8 @@ def _read(rel: str) -> str:
                 "the binary apply_epilogue in mma.h did not match; MLX "
                 "changed the file, so re-check steel_gemm.py")
         text = text.replace(
-            _MMA_ANCHOR, _TGP_STORE + _LN_EPILOGUE + _MMA_ANCHOR, 1)
+            _MMA_ANCHOR,
+            _TGP_STORE + _LN_EPILOGUE + _ROW_STATS_EPILOGUE + _MMA_ANCHOR, 1)
     return text
 
 
@@ -261,6 +351,8 @@ _CALLEE_DECL = """METAL_FUNC void gemm(
     const device T* rowstat,
     const device T* lnc1,
     const device T* lnc2,
+    device T* rowpart,
+    const device T* rowcarry,
     const thread GEMMParams* params,
     const thread GEMMAddMMParams* addmm_params,
     uint simd_lane_id,
@@ -292,6 +384,17 @@ _C_OFFSET_WITH_LN = _C_OFFSET + """
   lnc1 += c_col_long;
   lnc2 += c_col_long;"""
 
+# Row 47. Each simdgroup owns one partial plane pair. `tid_x` is the N tile
+# index, and the two simdgroups that cover one row of the tile differ in
+# `simd_group_id % WN`. So the plane index is `WN * tid_x + simd_group_id % WN`
+# and the buffer holds `WN * tiles_n` entries for each row.
+_C_OFFSET_WITH_STATS = """
+
+  // Row 47. See steel_gemm.py.
+  rowpart += (WN * tid_x + int(simd_group_id % WN)) * 2 * params->M
+      + c_row_long;
+  rowcarry += c_col_long;"""
+
 # The two store sites. The epilogue goes in front of each one, so it acts on
 # the accumulator in registers and never on DRAM.
 _STORE_SITES = (
@@ -305,7 +408,8 @@ _STORE_SITES = (
 
 
 def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
-                  gelu: bool, layer_norm: bool = False) -> str:
+                  gelu: bool, layer_norm: bool = False,
+                  row_stats: bool = False) -> str:
     """
     Read `steel_gemm_fused.h` and make it a callable device function.
 
@@ -361,6 +465,13 @@ def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
                 "MLX changed the file, so re-check this module")
         text = text.replace(_C_OFFSET, _C_OFFSET_WITH_LN, 1)
 
+    if row_stats:
+        if _C_OFFSET not in text:
+            raise RuntimeError(
+                "the C tile offset in steel_gemm_fused.h did not match; "
+                "MLX changed the file, so re-check this module")
+        text = text.replace(_C_OFFSET, _C_OFFSET + _C_OFFSET_WITH_STATS, 1)
+
     # Both epilogues go in front of the store, so they act on the accumulator
     # in registers. The LayerNorm goes FIRST: it finishes the projection, and
     # GELU then runs on the finished value. Inserting the LayerNorm first
@@ -377,6 +488,13 @@ def _hoist_kernel(align_m: bool, align_n: bool, align_k: bool,
                 anchor,
                 f"{indent}mma_op.apply_epilogue("
                 f"TransformGelu<AccumType, AccumType>{{}});\n" + anchor)
+        if row_stats:
+            # LAST, so it sits directly above the store and reads the value
+            # the kernel is about to write.
+            text = text.replace(
+                anchor,
+                f"{indent}mma_op.write_row_stats("
+                f"rowpart, rowcarry, params->M, simd_lane_id);\n" + anchor)
     return text
 
 
@@ -446,7 +564,8 @@ def choose_tile(m: int, n: int, k: int, transpose_a: bool = False,
 
 
 def build_header(align_m: bool, align_n: bool, align_k: bool,
-                 gelu: bool, layer_norm: bool = False) -> str:
+                 gelu: bool, layer_norm: bool = False,
+                 row_stats: bool = False) -> str:
     """Inline every steel header, then the hoisted kernel."""
     parts = [
         "#ifndef METAL_FUNC",
@@ -460,7 +579,8 @@ def build_header(align_m: bool, align_n: bool, align_k: bool,
     parts.append("using namespace mlx::steel;")
     if gelu:
         parts.append(_GELU_TRANSFORM)
-    parts.append(_hoist_kernel(align_m, align_n, align_k, gelu, layer_norm))
+    parts.append(
+        _hoist_kernel(align_m, align_n, align_k, gelu, layer_norm, row_stats))
     return "\n".join(parts)
 
 
@@ -470,7 +590,7 @@ _CACHE: Dict[tuple, object] = {}
 def _source(m: int, n: int, k: int, lda: int, ldb: int, ldd: int,
             ldc: int, fdc: int, bm: int, bn: int, bk: int, wm: int, wn: int,
             transpose_a: bool, transpose_b: bool,
-            layer_norm: bool = False) -> str:
+            layer_norm: bool = False, row_stats: bool = False) -> str:
     """
     The kernel body. It builds GEMMParams on the stack, then calls the
     hoisted kernel.
@@ -489,6 +609,9 @@ def _source(m: int, n: int, k: int, lda: int, ldb: int, ldd: int,
     # is off, nothing dereferences them and `a` stands in, so the kernel needs
     # no extra buffer.
     ln_args = "rowstat, lnc1, lnc2" if layer_norm else "a, a, a"
+    # `out` stands in for the partials buffer when row 47 is off. Nothing
+    # dereferences it then, so the kernel needs no extra buffer.
+    stat_args = "rowpart, rowcarry" if row_stats else "out, a"
     return f"""
   threadgroup float As[{a_floats}];
   threadgroup float Bs[{b_floats}];
@@ -510,7 +633,7 @@ def _source(m: int, n: int, k: int, lda: int, ldb: int, ldd: int,
   gemm<float, {bm}, {bn}, {bk}, {wm}, {wn},
        {"true" if transpose_a else "false"},
        {"true" if transpose_b else "false"}, float>(
-      a, b, c, out, {ln_args}, &p, &ap,
+      a, b, c, out, {ln_args}, {stat_args}, &p, &ap,
       thread_index_in_simdgroup,
       simdgroup_index_in_threadgroup,
       threadgroup_position_in_grid,
@@ -533,7 +656,9 @@ def steel_addmm(
     rowstat: Optional[mx.array] = None,
     lnc1: Optional[mx.array] = None,
     lnc2: Optional[mx.array] = None,
-) -> mx.array:
+    row_stats: bool = False,
+    row_carry: Optional[mx.array] = None,
+):
     """
     `bias + a @ b`, with GELU folded into the GEMM epilogue when `gelu`.
 
@@ -542,6 +667,18 @@ def steel_addmm(
     ONE kernel where MLX runs two.
 
     `a` is [..., M, K]. `bias` is (N,), broadcast over the rows.
+
+    THE MATRIX C OPERAND (row 47)
+
+    `bias` may instead be a full [..., M, N] array. The result is then
+    `bias + a @ b`, which is what `mx.addmm(x, context, w.T)` computes for
+    the residual add of row 36. The steel kernel already carries this case:
+    it reads C at `c_row * ldc + c_col * fdc`, so a vector passes `ldc = 0`
+    and a matrix passes `ldc = N`. Nothing else changes.
+
+    Row 47 needs this, because the two GEMMs that write the activation the
+    statistics pass reads, `out proj` and `ffn_out`, both take the residual
+    as a matrix C. They cannot reach a steel epilogue without it.
 
     `transpose_b` names the layout of `b` as it is STORED, because the steel
     kernel takes the layout as a template argument and reads it in place:
@@ -574,6 +711,20 @@ def steel_addmm(
 
     The epilogue has no bounds check, so this path needs an aligned tile.
 
+    THE ROW STATISTICS EPILOGUE (row 47)
+
+    Set `row_stats` to take the LayerNorm statistics of the OUTPUT of this
+    GEMM, in the same epilogue that stores it. The call then returns the pair
+    `(out, partials)` instead of `out`, and `row_stats_reduce()` turns the
+    partials into the `[M, 2]` array that `rowstat` above takes.
+
+    `row_carry` is the deferred residual bias of row 36, an (N,) vector. The
+    statistics are taken over `out + row_carry`, which is what
+    `fast_layernorm.layer_norm_stats(pre_bias=)` computes. Pass None when the
+    block defers no bias.
+
+    This epilogue has no bounds check either, so it needs an aligned tile.
+
     float32 only.
     """
     if a.dtype != mx.float32 or b.dtype != mx.float32:
@@ -590,13 +741,22 @@ def steel_addmm(
         ldb = n
     if kb != k:
         raise ValueError(f"shape mismatch: a {a.shape} against b {b.shape}")
-    if bias.ndim != 1 or bias.shape[0] != n:
-        raise ValueError(f"bias must be ({n},), got {bias.shape}")
-
     out_shape = tuple(a.shape[:-1]) + (n,)
     m = 1
     for dim in a.shape[:-1]:
         m *= dim
+
+    # `ldc = 0` broadcasts one row of C over every output row. `ldc = n`
+    # gives each output row its own row of C. See `_source()`.
+    if bias.ndim == 1:
+        if bias.shape[0] != n:
+            raise ValueError(f"bias must be ({n},), got {bias.shape}")
+        ldc = 0
+    elif tuple(bias.shape) == out_shape:
+        ldc = n
+    else:
+        raise ValueError(
+            f"bias must be ({n},) or {out_shape}, got {tuple(bias.shape)}")
 
     transpose_a = False
     lda = k
@@ -636,23 +796,40 @@ def steel_addmm(
             if vec.ndim != 1 or vec.shape[0] != n:
                 raise ValueError(f"{name} must be ({n},), got {vec.shape}")
 
-    key = (m, n, k, lda, ldb, ldd, bm, bn, bk, wm, wn,
-           transpose_a, transpose_b, gelu, layer_norm, align_m, align_n)
+    if row_stats:
+        if not (align_m and align_n):
+            # The epilogue writes `partials` with no bounds check.
+            raise ValueError(
+                f"the row statistics epilogue needs an aligned tile: M={m} "
+                f"must divide by bm={bm} and N={n} by bn={bn}")
+        if row_carry is None:
+            row_carry = mx.zeros((n,), dtype=mx.float32)
+        elif row_carry.ndim != 1 or row_carry.shape[0] != n:
+            raise ValueError(
+                f"row_carry must be ({n},), got {row_carry.shape}")
+
+    key = (m, n, k, lda, ldb, ldd, ldc, bm, bn, bk, wm, wn,
+           transpose_a, transpose_b, gelu, layer_norm, row_stats,
+           align_m, align_n)
     kernel = _CACHE.get(key)
     if kernel is None:
         names = ["a", "b", "c"]
         if layer_norm:
             names += ["rowstat", "lnc1", "lnc2"]
+        if row_stats:
+            names += ["rowcarry"]
         kernel = mx.fast.metal_kernel(
             name=f"steel_addmm_m{m}_n{n}_k{k}"
                  f"_bm{bm}_bn{bn}_bk{bk}_wm{wm}_wn{wn}"
-                 f"_tb{int(transpose_b)}_g{int(gelu)}_ln{int(layer_norm)}",
+                 f"_tb{int(transpose_b)}_g{int(gelu)}_ln{int(layer_norm)}"
+                 f"_mc{int(ldc != 0)}_rs{int(row_stats)}",
             input_names=names,
-            output_names=["out"],
-            header=build_header(align_m, align_n, align_k, gelu, layer_norm),
-            source=_source(m, n, k, lda, ldb, ldd, 0, 1,
+            output_names=["out", "rowpart"] if row_stats else ["out"],
+            header=build_header(align_m, align_n, align_k, gelu, layer_norm,
+                                row_stats),
+            source=_source(m, n, k, lda, ldb, ldd, ldc, 1,
                            bm, bn, bk, wm, wn, transpose_a, transpose_b,
-                           layer_norm),
+                           layer_norm, row_stats),
             ensure_row_contiguous=False,
         )
         _CACHE[key] = kernel
@@ -662,12 +839,105 @@ def steel_addmm(
     operands = [a, b, bias]
     if layer_norm:
         operands += [rowstat, lnc1, lnc2]
+    if row_stats:
+        operands += [row_carry]
+
+    shapes = [out_shape]
+    if row_stats:
+        # `[P][2][M]`. Eight leader lanes of one simdgroup then write eight
+        # adjacent floats. See `_ROW_STATS_EPILOGUE`.
+        shapes.append((wn * tiles_n, 2, m))
+
     outputs = kernel(
         inputs=operands,
         grid=(tiles_n * 32, tiles_m * wm, wn),
         threadgroup=(32, wm, wn),
-        output_shapes=[out_shape],
-        output_dtypes=[a.dtype],
+        output_shapes=shapes,
+        output_dtypes=[a.dtype] * len(shapes),
+    )
+    return (outputs[0], outputs[1]) if row_stats else outputs[0]
+
+
+# The reduce half of row 47. It sums the `P` partials of each row and writes
+# the same `[M, 2]` pair that `fast_layernorm.layer_norm_stats()` writes, so
+# the LayerNorm epilogue of row 46 takes it with no change.
+#
+# It reads `P * 2` floats for each row where `layer_norm_stats()` reads the
+# whole activation: 4 MiB against 65 MiB at the shape 6 chunk.
+#
+# The variance is the UNCENTRED form, because a tile never sees a whole row.
+# `profiling/ln_tiled_stats_probe.py` measures that this model never enters
+# the cancellation regime.
+_REDUCE_SOURCE = """
+    constexpr uint P = {planes};
+    constexpr float INV_D = {inv_d}f;
+    constexpr float EPS = {eps}f;
+
+    uint row = thread_position_in_grid.x;
+    uint n_rows = {rows};
+    if (row >= n_rows) {{
+        return;
+    }}
+
+    // `[P][2][M]`, so neighbouring threads read neighbouring floats.
+    float total = 0.0f;
+    float square = 0.0f;
+    for (uint p = 0; p < P; ++p) {{
+        total += part[(2 * p + 0) * n_rows + row];
+        square += part[(2 * p + 1) * n_rows + row];
+    }}
+
+    float mean = total * INV_D;
+    float var = metal::fmax(square * INV_D - mean * mean, 0.0f);
+    float rstd = metal::rsqrt(var + EPS);
+
+    out[2 * row + 0] = rstd;
+    out[2 * row + 1] = rstd * mean;
+"""
+
+_REDUCE_CACHE: Dict[tuple, object] = {}
+
+# Threads per threadgroup for the reduce. One thread takes one row.
+_REDUCE_GROUP = 256
+
+
+def row_stats_reduce(partials: mx.array, width: int, eps: float) -> mx.array:
+    """
+    Turn the partials of `steel_addmm(row_stats=True)` into `[M, 2]`.
+
+    The result holds `{rstd, rstd * mean}` for each row, which is what
+    `fast_layernorm.layer_norm_stats()` returns and what the `rowstat`
+    argument above takes.
+
+    `width` is the row width the statistics run over, which is N of the GEMM
+    that produced the partials.
+    """
+    if partials.ndim != 3 or partials.shape[1] != 2:
+        raise ValueError(
+            f"partials must be [P, 2, M], got {partials.shape}")
+    planes, _, rows = partials.shape
+
+    key = (planes, rows, width, float(eps))
+    kernel = _REDUCE_CACHE.get(key)
+    if kernel is None:
+        kernel = mx.fast.metal_kernel(
+            name=f"steel_row_stats_reduce_p{planes}_m{rows}_d{width}",
+            input_names=["part"],
+            output_names=["out"],
+            source=_REDUCE_SOURCE.format(
+                planes=planes, rows=rows,
+                inv_d=repr(1.0 / float(width)), eps=float(eps)),
+            ensure_row_contiguous=False,
+        )
+        _REDUCE_CACHE[key] = kernel
+
+    groups = -(-rows // _REDUCE_GROUP)
+    outputs = kernel(
+        inputs=[partials],
+        grid=(groups * _REDUCE_GROUP, 1, 1),
+        threadgroup=(_REDUCE_GROUP, 1, 1),
+        output_shapes=[(rows, 2)],
+        output_dtypes=[partials.dtype],
     )
     return outputs[0]
 

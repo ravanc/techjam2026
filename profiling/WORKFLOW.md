@@ -46,9 +46,23 @@ kernel launch. For each stage it gives the FLOPs, the compulsory DRAM
 traffic, the arithmetic intensity, and the two achieved rates against the
 measured roofs (4.06 TFLOP/s and 128 GB/s, ridge 31.7 FLOP/byte).
 
-It subtracts the `mx.eval` + `mx.synchronize` round trip, which is 0.13 to
-0.17 ms and dominates every small shape. A stage that does not clear the
+It subtracts the `mx.eval` + `mx.synchronize` round trip, which is 0.15 to
+0.32 ms and dominates every small shape. A stage that does not clear the
 floor prints `at floor` and is marked LAUNCH.
+
+**The floor moves between runs, and the tool measures it once per run.**
+Three runs on 30 August 2026 gave 0.3049, 0.1468 and 0.3214 ms. Every stage
+loses that number, so a stage under about 0.5 ms is not reproducible in the
+`ms` column: the shape 8 `ln1 stats` read 0.2602 ms and then 0.0691 ms from
+the floor alone. The `raw` column holds: every stage above 1 ms repeated
+within 5%, and the shape 8 `qkv proj` within 0.1%. **Rank by `raw`.**
+
+**The `ln1 stats` and `ln2 stats` rows are stale since row 47.** The tool
+builds a block from the plan and times each stage alone, and it does not
+model the statistics epilogue. A shape that selects row 47 no longer runs
+those two passes at all: the GEMM above each one produces the statistics in
+its own epilogue. Read the two rows as the prize row 47 took, not as current
+cost. Every other row still describes what the model runs.
 
 Two extra diagnostics print under each table:
 
@@ -63,9 +77,21 @@ Two extra diagnostics print under each table:
   operand that is not row contiguous. That is what the gap was for the steel
   kernel. See OPTIMIZATIONS.md rows 32 and 34.
 
-Compare `sum of stages` against `real per layer`. The sum is the larger
-number, because the GPU overlaps the layers. When the two are far apart, the
-stage model is wrong.
+Compare `sum of stages` against `real per layer`. The two sums bracket it:
+the `raw` sum is above the real layer and the `ms` sum is below it, because
+`ms` subtracts the floor once for each of the 9 stages while the real model
+pays it once for the whole forward. Measured on 30 August 2026:
+
+| shape | `ms` sum | real per layer | `raw` sum |
+|---:|---:|---:|---:|
+| 1 | 0.438 | 0.846 | 2.326 |
+| 6 | 10.215 | 12.070 | 12.552 |
+| 8 | 28.042 | 30.180 | 30.664 |
+| 13 | 8.574 | 10.381 | 10.917 |
+
+The bracket is tight at a large shape (4% wide at shape 6 and 8) and useless
+at a small one (shape 1 spans 5x). When the real layer falls OUTSIDE the
+bracket, the stage model is wrong.
 
 **The gap is not fusion.** `mx.compile` does not fuse the elementwise stages
 of this block. Measured at the shape 6 chunk (B1024 S128 D128), median of 30
@@ -109,6 +135,24 @@ Do these steps in this order:
 4. Read the shader profiler. Decide if the kernel is memory-bound or math-bound.
 5. Change the code.
 6. Do step 1 again. Make sure the time decreased.
+
+## A small shape needs an A/B, not two sweeps
+
+A sweep compares two runs that are minutes or hours apart, so its ratio holds
+the machine as well as the code. Below about 2 ms a shape moves further with
+the machine than with any optimization.
+
+Measured: row 47 read **0.922x** at shape 12 from two sweeps, and
+**1.008x to 1.013x** from an interleaved A/B of the same change. Shape 12's
+own MPS control moved 0.955x on that sweep pair, and MPS runs none of the
+code under test.
+
+    .venv/bin/python3 profiling/plan_ab.py --cases 12
+
+`plan_ab.py` builds the same model twice in one process, sets
+`plan_override` on each, and alternates the order each round. Use it, or read
+the MPS control and say the reading is inconclusive. Do not record a small
+shape's two-sweep ratio as a result.
 
 ## Always synchronize before you measure
 

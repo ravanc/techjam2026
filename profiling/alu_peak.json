@@ -1,0 +1,249 @@
+{
+  "peak_tflops": 3.915638037116684,
+  "best": {
+    "threads": 1048576,
+    "unroll": 8,
+    "iters": 447,
+    "lanes": 4,
+    "launches": 24,
+    "ms": 183.86374996043742,
+    "tflops": 3.915638037116684,
+    "gflop_total": 719.943892992,
+    "sustained": true
+  },
+  "sustained": [
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 192.50899995677173,
+      "tflops": 3.7397934286379586,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 185.84554200060666,
+      "tflops": 3.8738830387960013,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 186.3372919615358,
+      "tflops": 3.863659739890459,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 183.86374996043742,
+      "tflops": 3.915638037116684,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 187.53666698466986,
+      "tflops": 3.8389500281075786,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "launches": 24,
+      "ms": 185.50004193093628,
+      "tflops": 3.8810982763014312,
+      "gflop_total": 719.943892992,
+      "sustained": true
+    }
+  ],
+  "gpu_cores": 14,
+  "alus_per_core_assumed": 128,
+  "implied_clock_ghz": 1.0925329344633605,
+  "configurations": [
+    {
+      "threads": 65536,
+      "unroll": 4,
+      "iters": 57220,
+      "lanes": 1,
+      "ms": 11.279208934865892,
+      "tflops": 2.659739661995781,
+      "gflop_total": 29.99975936
+    },
+    {
+      "threads": 65536,
+      "unroll": 8,
+      "iters": 28610,
+      "lanes": 1,
+      "ms": 9.576499927788973,
+      "tflops": 3.1326434069035027,
+      "gflop_total": 29.99975936
+    },
+    {
+      "threads": 65536,
+      "unroll": 16,
+      "iters": 14305,
+      "lanes": 1,
+      "ms": 8.718791068531573,
+      "tflops": 3.440816407251354,
+      "gflop_total": 29.99975936
+    },
+    {
+      "threads": 262144,
+      "unroll": 4,
+      "iters": 14305,
+      "lanes": 1,
+      "ms": 10.540541959926486,
+      "tflops": 2.8461306329460534,
+      "gflop_total": 29.99975936
+    },
+    {
+      "threads": 262144,
+      "unroll": 8,
+      "iters": 7152,
+      "lanes": 1,
+      "ms": 9.005874977447093,
+      "tflops": 3.330899250003077,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 262144,
+      "unroll": 16,
+      "iters": 3576,
+      "lanes": 1,
+      "ms": 8.550958009436727,
+      "tflops": 3.5081054280578816,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 4,
+      "iters": 3576,
+      "lanes": 1,
+      "ms": 10.700125014409423,
+      "tflops": 2.8034870777307153,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 1788,
+      "lanes": 1,
+      "ms": 8.941040956415236,
+      "tflops": 3.3550525441309547,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 16,
+      "iters": 894,
+      "lanes": 1,
+      "ms": 8.368167094886303,
+      "tflops": 3.5847350880853286,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 65536,
+      "unroll": 4,
+      "iters": 14305,
+      "lanes": 4,
+      "ms": 8.822000003419816,
+      "tflops": 3.400562156922546,
+      "gflop_total": 29.99975936
+    },
+    {
+      "threads": 65536,
+      "unroll": 8,
+      "iters": 7152,
+      "lanes": 4,
+      "ms": 8.416082942858338,
+      "tflops": 3.5643258760246903,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 65536,
+      "unroll": 16,
+      "iters": 3576,
+      "lanes": 4,
+      "ms": 13.137375004589558,
+      "tflops": 2.283383263210518,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 262144,
+      "unroll": 4,
+      "iters": 3576,
+      "lanes": 4,
+      "ms": 8.64733406342566,
+      "tflops": 3.4690069781016835,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 262144,
+      "unroll": 8,
+      "iters": 1788,
+      "lanes": 4,
+      "ms": 7.91495805606246,
+      "tflops": 3.7899963582274827,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 262144,
+      "unroll": 16,
+      "iters": 894,
+      "lanes": 4,
+      "ms": 11.91799994558096,
+      "tflops": 2.517004727720505,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 4,
+      "iters": 894,
+      "lanes": 4,
+      "ms": 8.366084075532854,
+      "tflops": 3.585627629027788,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 8,
+      "iters": 447,
+      "lanes": 4,
+      "ms": 7.77024996932596,
+      "tflops": 3.8605787878664843,
+      "gflop_total": 29.997662208
+    },
+    {
+      "threads": 1048576,
+      "unroll": 16,
+      "iters": 223,
+      "lanes": 4,
+      "ms": 10.03908400889486,
+      "tflops": 2.981402816978206,
+      "gflop_total": 29.930553344
+    }
+  ]
+}
