@@ -823,11 +823,14 @@ This row guessed that `BK=8` would fit, and never measured whether it would be
 faster. **Row 41 measured it. `BK=8` fits, and it loses: 0.904x against the
 MLX fallback.** Read row 41 before you try this again.
 
-**The ceiling is small.** Shape 8 is 7.1% attention by measured time, not the
-4% the FLOP table implies, because `d_model=1024` makes the projections 92%
-of the work. `stage_roofline.py --shapes 8` gives `sdpa` 2.2808 ms and
-`merge heads` 0.4113 ms of a 32.06 ms layer. A perfect attention kernel would
-give about 1.0% of the weighted score.
+**The ceiling is small.** Shape 8 is 8.9% attention by measured time, not the
+4% the FLOP table implies, because `d_model=1024` makes the projections 89%
+of the work. `stage_roofline.py --shapes 8` on 31 August 2026 gives `sdpa`
+2.651 ms and `merge heads` 0.723 ms of a 29.813 ms layer. Rows 46 and 47 cut
+the layer from 32.06 ms, so attention holds a larger share than this row first
+recorded. The `sdpa` floor is 1.049 ms at its byte count, so a perfect
+attention kernel gives 1.06x on shape 8, which is about 1.2% of the weighted
+score.
 
 ## 27. Gate the steel kernel on a string mask — a bug fix
 
@@ -2124,11 +2127,13 @@ than 68.5 KiB.
 Three measurements say do not build it:
 
 1. **The ceiling is about 1% FLOP-weighted.** `stage_roofline.py --shapes 8`
-   puts `sdpa` at 2.2808 ms and `merge heads` at 0.4113 ms of a 32.06 ms
-   layer, so 8.4% of shape 8. Shape 8 is 21.3% of the weight. Even a 2x
-   returns about 1.0%.
-2. **The stage is IO bound, not compute bound.** It runs at 46% of the
-   bandwidth roof with the arithmetic units idle. `d_outer` solves register
+   on 31 August 2026 puts `sdpa` at 2.651 ms and `merge heads` at 0.723 ms of
+   a 29.813 ms layer, so 11.3% of shape 8. Rows 46 and 47 cut the layer from
+   32.06 ms, which raises the share from the 8.4% this row first recorded.
+   Shape 8 is 21.3% of the weight. The `sdpa` floor is 1.049 ms, so a perfect
+   kernel returns about 1.2%.
+2. **The stage is IO bound, not compute bound.** It runs at 40% of the
+   bandwidth roof and 20% of the matmul roof, so the arithmetic units idle. `d_outer` solves register
    pressure to raise ALU utilization. It does not create bandwidth.
 3. **Row 21's premise is weaker than recorded.** The profiler reports
    `sdpa peak memory: 80.0 MiB allocated` against `128.0 MiB` for operands and

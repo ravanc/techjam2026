@@ -80,18 +80,33 @@ Two extra diagnostics print under each table:
 Compare `sum of stages` against `real per layer`. The two sums bracket it:
 the `raw` sum is above the real layer and the `ms` sum is below it, because
 `ms` subtracts the floor once for each of the 9 stages while the real model
-pays it once for the whole forward. Measured on 30 August 2026:
+pays it once for the whole forward. **The bracket now fails at shape 6:**
+the `ms` sum 11.755 is ABOVE the real layer 11.546. The `stats` rows below
+say why.
 
-| shape | `ms` sum | real per layer | `raw` sum |
+| shape | `ms` sum | real per layer | `raw` sum | when |
+|---:|---:|---:|---:|---|
+| 1 | 0.438 | 0.846 | 2.326 | 30 August 2026 |
+| 6 | 11.755 | 11.546 | 12.880 | 31 August 2026 |
+| 8 | 29.539 | 29.813 | 30.775 | 31 August 2026 |
+| 13 | 8.574 | 10.381 | 10.917 | 30 August 2026 |
+
+**Drop the two `stats` rows and the `raw` sum stops bracketing: it lands on
+the real layer.** Row 47 removes those two passes, so the tool times work
+that the model never runs. Measured 31 August 2026:
+
+| shape | `raw` sum, all rows | `raw` sum, no `stats` rows | real per layer |
 |---:|---:|---:|---:|
-| 1 | 0.438 | 0.846 | 2.326 |
-| 6 | 10.215 | 12.070 | 12.552 |
-| 8 | 28.042 | 30.180 | 30.664 |
-| 13 | 8.574 | 10.381 | 10.917 |
+| 6 | 12.880 | 11.491 | 11.546 |
+| 8 | 30.775 | 29.958 | 29.813 |
 
-The bracket is tight at a large shape (4% wide at shape 6 and 8) and useless
-at a small one (shape 1 spans 5x). When the real layer falls OUTSIDE the
-bracket, the stage model is wrong.
+Both land within 0.5% of the real layer. That is the check that the
+`stats` rows do not run, and it is a better bracket than the raw sum.
+
+The bracket is tight at a large shape (4% wide at shape 8) and useless at a
+small one (shape 1 spans 5x). When the real layer falls outside the bracket,
+the stage model is wrong: at shape 6 it now does, because the two `stats`
+rows time work that row 47 removed.
 
 **The gap is not fusion.** `mx.compile` does not fuse the elementwise stages
 of this block. Measured at the shape 6 chunk (B1024 S128 D128), median of 30
