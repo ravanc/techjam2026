@@ -4,6 +4,11 @@
 MLX on the GPU, behind the torch interface the harness expects. The baseline
 does not change. It is the reference for both accuracy and speed.
 
+Install:
+
+    python3 -m venv .venv
+    .venv/bin/python3 -m pip install -r requirements.txt
+
 Run the graded sweep:
 
     .venv/bin/python3 scoreboard.py --cpu-cache --label "what changed"
@@ -162,3 +167,10 @@ GPU, and each one makes the other reading false:
 Machine: Apple M3 Pro, 14 GPU cores, 18 GiB unified memory, macOS 24.6,
 Python 3.13.5, torch 2.13.0, mlx 0.32.2. See
 [references/machine.md](references/machine.md).
+
+`steel_gemm.py` and `steel_attention.py` read the Metal headers from the
+installed `mlx` package. `mlx_kernels.py` finds them. It asks `mlx` for its
+own path, so a venv at any place and at any Python version works. Set
+`MLX_KERNELS_DIR` to override the search. When the headers are absent, both
+modules turn themselves off and the model takes the plain MLX path, so the
+run completes with a slower number instead of an error.

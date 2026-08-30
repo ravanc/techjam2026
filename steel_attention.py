@@ -40,16 +40,13 @@ The arithmetic is untouched. This is Apple's kernel, at a new width.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
 
-KERNELS = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    ".venv/lib/python3.13/site-packages/mlx/include/mlx/backend/metal/kernels",
-)
+from mlx_kernels import available as kernels_available
+from mlx_kernels import read as kernels_read
 
 # Dependency order. `attn.h` includes the first six, so inline them first.
 _CHAIN = [
@@ -69,8 +66,7 @@ _PRAGMA_ONCE = re.compile(r"^\s*#pragma once\s*$", re.M)
 
 
 def _read(rel: str) -> str:
-    with open(os.path.join(KERNELS, rel)) as handle:
-        text = handle.read()
+    text = kernels_read(rel)
     text = _MLX_INCLUDE.sub("", text)
     text = _PRAGMA_ONCE.sub("", text)
     return text
@@ -264,7 +260,14 @@ def supports(head_dim: int, bq: int = 32, bk: int = 32) -> bool:
 
     The kernel needs `BD % 8 == 0`, because its MMA fragment is 8 wide. It
     also needs the threadgroup buffers to fit.
+
+    It also needs the MLX headers on disk. This module inlines them, so it
+    returns False when they are absent. The caller then keeps
+    `mx.fast.scaled_dot_product_attention` and the run completes. See
+    `mlx_kernels.py`.
     """
+    if not kernels_available():
+        return False
     return head_dim % 8 == 0 and fits_threadgroup(bq, bk, head_dim)
 
 

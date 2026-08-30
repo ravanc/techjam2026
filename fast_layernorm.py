@@ -116,10 +116,76 @@ _SOURCE = """
     }}
 """
 
+# The statistics kernel of row 46. It runs the same two reductions as
+# `_SOURCE`, and then it STOPS. It writes two floats for each row instead of
+# the whole normalized row.
+#
+#     out[row] = {rstd, rstd * mean}
+#
+# Row 46 folds the gain, the bias and the LayerNorm itself into the weights
+# of the GEMM that follows, so those two floats are all that is left for the
+# GEMM epilogue to apply. At d_model 128 this writes 2 floats for each 128,
+# so `ln1` stops moving 128 MiB and moves 65 MiB. See OPTIMIZATIONS.md row 46.
+#
+# The two values are packed in the order the epilogue reads them, so the
+# kernel does the multiply once here and not once for each output column.
+_STATS_SOURCE = """
+    #define PRE_BIAS {pre_bias}
+    constexpr uint SIMD = {simd};
+    constexpr uint D = {width};
+    constexpr uint K = (D + SIMD - 1) / SIMD;
+    constexpr float EPS = {eps};
+
+    uint lane = thread_position_in_threadgroup.x;
+    uint row = thread_position_in_grid.y;
+    uint n_rows = x_shape[0];
+    if (row >= n_rows) {{
+        return;
+    }}
+
+    const device T* xr = x + (ulong)row * (ulong)D;
+
+    // Pass 1. The values stay in registers, exactly as in `_SOURCE`, so the
+    // two kernels agree bit for bit on the mean and the rstd.
+    float vals[K];
+    float total = 0.0f;
+    for (uint k = 0; k < K; ++k) {{
+        uint j = lane + k * SIMD;
+        float v = (j < D) ? (float)xr[j] : 0.0f;
+#if PRE_BIAS
+        if (j < D) {{
+            v += (float)pb[j];
+        }}
+#endif
+        vals[k] = v;
+        total += v;
+    }}
+    float mean = simd_sum(total) / (float)D;
+
+    // Pass 2, over the registers. This is the centred form, not
+    // `E[x^2] - mean^2`. The centred form is what the torch baseline runs.
+    float sq = 0.0f;
+    for (uint k = 0; k < K; ++k) {{
+        uint j = lane + k * SIMD;
+        if (j < D) {{
+            float d = vals[k] - mean;
+            sq += d * d;
+        }}
+    }}
+    float rstd = metal::rsqrt(simd_sum(sq) / (float)D + EPS);
+
+    // One lane writes the pair. Every lane holds the same two values.
+    if (lane == 0) {{
+        out[2 * row + 0] = (T)rstd;
+        out[2 * row + 1] = (T)(rstd * mean);
+    }}
+"""
+
 # One compiled kernel for each (width, eps, pre_bias). Building it is not
 # free, so the module keeps it. A model uses at most two entries per width:
 # one with the deferred bias and one without.
 _CACHE: Dict[Tuple[int, float, bool], object] = {}
+_STATS_CACHE: Dict[Tuple[int, float, bool], object] = {}
 
 
 def supports(width: int, dtype: mx.Dtype) -> bool:
@@ -199,3 +265,89 @@ def layer_norm(
         output_dtypes=[x.dtype],
     )
     return outputs[0].reshape(shape)
+
+
+# The row widths the statistics kernel serves. It is wider than `MAX_WIDTH`,
+# because this kernel has a different reason to exist. `MAX_WIDTH` stops at
+# 256 because `mx.fast.layer_norm` already reaches copy speed there, so there
+# is no LayerNorm left to win. Row 46 does not want a faster LayerNorm. It
+# wants the LayerNorm to stop WRITING an activation, and that prize grows
+# with the width. So this kernel serves shape 8 (d_model 1024) as well.
+#
+# The limit is registers: the kernel holds `ceil(D / 32)` floats per lane, so
+# 1024 costs 32. Measure before you widen it further.
+MAX_STATS_WIDTH = 1024
+
+
+def supports_stats(width: int, dtype: mx.Dtype) -> bool:
+    """Return True when the statistics kernel serves the width and the type."""
+    return 0 < width <= MAX_STATS_WIDTH and dtype == mx.float32
+
+
+def _stats_kernel(width: int, eps: float, pre_bias: bool):
+    key = (width, eps, pre_bias)
+    kernel = _STATS_CACHE.get(key)
+    if kernel is None:
+        names = ["x"] + (["pb"] if pre_bias else [])
+        kernel = mx.fast.metal_kernel(
+            name="techjam_ln_stats_w%d%s" % (width, "_pb" if pre_bias else ""),
+            input_names=names,
+            output_names=["out"],
+            source=_STATS_SOURCE.format(
+                simd=SIMD_WIDTH, width=width, eps=float(eps),
+                pre_bias=1 if pre_bias else 0,
+            ),
+        )
+        _STATS_CACHE[key] = kernel
+    return kernel
+
+
+def layer_norm_stats(
+    x: mx.array,
+    eps: float,
+    pre_bias: Optional[mx.array] = None,
+) -> mx.array:
+    """
+    Return `[rows, 2]` holding `{rstd, rstd * mean}` for each row of `x`.
+
+    This is the first half of `layer_norm()`. It runs the same two reductions
+    and then stops, so the two functions agree on the mean and the rstd.
+
+    Row 46 folds the gain, the bias and the normalization itself into the
+    weights of the GEMM that follows. These two floats are the only part that
+    depends on the data, so they are the only part that stays here. The
+    LayerNorm then never writes an activation.
+
+    `pre_bias` is the deferred residual bias of row 36. The statistics are
+    taken over `x + pre_bias`, so this function matches
+    `layer_norm(x, w, b, eps, pre_bias=c)` on the same input.
+
+    The caller must test `supports_stats()` first.
+    """
+    width = x.shape[-1]
+    if not supports_stats(width, x.dtype):
+        raise ValueError(
+            "fast_layernorm has no statistics kernel for width %d at %s"
+            % (width, x.dtype)
+        )
+
+    flat = x.reshape(-1, width)
+    n_rows = flat.shape[0]
+
+    inputs = [flat]
+    if pre_bias is not None:
+        if pre_bias.shape != (width,):
+            raise ValueError(
+                "pre_bias must be (%d,), got %s" % (width, pre_bias.shape)
+            )
+        inputs.append(pre_bias)
+
+    outputs = _stats_kernel(width, eps, pre_bias is not None)(
+        inputs=inputs,
+        template=[("T", x.dtype)],
+        grid=(SIMD_WIDTH, n_rows, 1),
+        threadgroup=(SIMD_WIDTH, ROWS_PER_GROUP, 1),
+        output_shapes=[(n_rows, 2)],
+        output_dtypes=[x.dtype],
+    )
+    return outputs[0]

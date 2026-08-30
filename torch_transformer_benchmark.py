@@ -238,6 +238,12 @@ class KernelPlan:
     # The (bm, bn, bk, wm, wn) tile for the fused `ffn_in` + GELU kernel, or
     # None to keep `mlx_nn.gelu(mx.addmm(...))`.
     fuse_gelu: Optional[Tuple[int, int, int, int, int]] = None
+    # Row 46. The tile for the `qkv proj` GEMM and for the `ffn_in` GEMM when
+    # each one absorbs the LayerNorm above it. None keeps the separate
+    # LayerNorm kernel. The two are independent: a shape can win one tile and
+    # not the other.
+    fuse_ln_qkv: Optional[Tuple[int, int, int, int, int]] = None
+    fuse_ln_ffn: Optional[Tuple[int, int, int, int, int]] = None
 
     def describe(self) -> str:
         block = self.causal_block if self.causal_block else "full"
@@ -249,7 +255,9 @@ class KernelPlan:
             f"steel={self.steel_attention} "
             f"fast_ln={self.fast_layer_norm} "
             f"defer_bias={self.defer_bias} "
-            f"fuse_gelu={'x'.join(map(str, self.fuse_gelu)) if self.fuse_gelu else 'none'}"
+            f"fuse_gelu={'x'.join(map(str, self.fuse_gelu)) if self.fuse_gelu else 'none'} "
+            f"fuse_ln_qkv={'x'.join(map(str, self.fuse_ln_qkv)) if self.fuse_ln_qkv else 'none'} "
+            f"fuse_ln_ffn={'x'.join(map(str, self.fuse_ln_ffn)) if self.fuse_ln_ffn else 'none'}"
         )
 
 
@@ -340,7 +348,14 @@ from steel_gemm import steel_addmm
 # it with one coalesced read and two reductions over registers.
 # See OPTIMIZATIONS.md row 31.
 from fast_layernorm import layer_norm as fast_layer_norm
+from fast_layernorm import layer_norm_stats
 from fast_layernorm import supports as fast_layer_norm_supports
+from fast_layernorm import supports_stats as layer_norm_stats_supports
+# Row 46. A LayerNorm is affine in the row, so it distributes through the
+# GEMM that follows it and folds into that GEMM's weights at build time. The
+# LayerNorm then writes two floats for each row instead of a whole
+# activation. See OPTIMIZATIONS.md row 46.
+from steel_gemm import layer_norm_constants
 
 SDPA_FUSED_HEAD_DIMS = (64, 72, 80, 96, 128)
 SDPA_FUSED_MIN_HEAD_DIM = SDPA_FUSED_HEAD_DIMS[0]
@@ -509,6 +524,33 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     if itemsize == 4 and rows >= MIN_FUSED_GELU_ROWS:
         fuse_gelu = steel_gemm_tile(rows, config.ffn_dim, config.d_model)
 
+    # Row 46. Absorb each LayerNorm into the GEMM below it.
+    #
+    # The gate is the same as row 33's, and for the same reason: float32
+    # only, because the hoisted kernel is compiled for float32, and enough
+    # rows to fill the GPU. A small M loses to the kernel launch.
+    #
+    # The two GEMMs are gated apart. `qkv proj` has N = 3 * d_model and
+    # `ffn_in` has N = ffn_dim, so one can find a dividing tile and the other
+    # can fail to. The epilogue reads its operands with no bounds check, so
+    # `choose_tile()` returning None is a refusal, not a slow path.
+    #
+    # Unlike row 31 and row 36, this row has NO `d_model < 256` gate. It does
+    # not need `fast_layernorm`: it needs the statistics kernel, and that
+    # serves every width up to 1024. So shape 8 reaches this row, and shape 8
+    # is 21.3% of the FLOP weight.
+    fuse_ln_qkv = None
+    fuse_ln_ffn = None
+    if (
+        itemsize == 4
+        and rows >= MIN_FUSED_GELU_ROWS
+        and pad_head_dim is None
+        and layer_norm_stats_supports(config.d_model, mx.float32)
+    ):
+        fuse_ln_qkv = steel_gemm_tile(
+            rows, 3 * config.d_model, config.d_model, transpose_b=False)
+        fuse_ln_ffn = steel_gemm_tile(rows, config.ffn_dim, config.d_model)
+
     return KernelPlan(
         fuse_qkv=True,
         causal_block=causal_block,
@@ -518,6 +560,8 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         fast_layer_norm=use_fast_ln,
         defer_bias=use_defer_bias,
         fuse_gelu=fuse_gelu,
+        fuse_ln_qkv=fuse_ln_qkv,
+        fuse_ln_ffn=fuse_ln_ffn,
     )
 
 
@@ -684,13 +728,35 @@ def _mlx_transformer(
     defer = plan.defer_bias and not padded and not half
     carry = None
 
-    for layer in layers:
-        h = norm(x, layer["n1w"], layer["n1b"], carry)
+    # Row 46. The LayerNorm folds into the GEMM below it, so the block runs a
+    # statistics kernel instead of a LayerNorm: two floats for each row in
+    # place of a whole activation.
+    #
+    # The constants were built at weight build time, against
+    # `defer = plan.defer_bias`. A padded or half run computes a different
+    # `defer`, so it keeps the plain path and the constants go unused. That
+    # is the same rule row 36 applies, and for the same reason.
+    plain = padded or half
+    fuse_ln_qkv = None if plain else plan.fuse_ln_qkv
+    fuse_ln_ffn = None if plain else plan.fuse_ln_ffn
 
-        if plan.fuse_qkv:
+    for layer in layers:
+        if fuse_ln_qkv is not None:
+            # `x` goes in RAW. The statistics carry the only part of the
+            # LayerNorm that depends on the data.
+            stats = layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry)
+            bm, bn, bk, wm, wn = fuse_ln_qkv
+            fused = steel_addmm(
+                layer["ln1c3"], x, layer["ln1w"], transpose_b=False,
+                bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                rowstat=stats, lnc1=layer["ln1c1"], lnc2=layer["ln1c2"])
+            q, k, v = (heads(part) for part in mx.split(fused, 3, axis=-1))
+        elif plan.fuse_qkv:
+            h = norm(x, layer["n1w"], layer["n1b"], carry)
             fused = mx.addmm(layer["qkvb"], h, layer["qkvw"])
             q, k, v = (heads(part) for part in mx.split(fused, 3, axis=-1))
         else:
+            h = norm(x, layer["n1w"], layer["n1b"], carry)
             # The unfused path never pads, so it uses the true head width.
             q = heads(mx.addmm(layer["qb"], h, layer["qw"].T), head_dim)
             k = heads(mx.addmm(layer["kb"], h, layer["kw"].T), head_dim)
@@ -730,8 +796,18 @@ def _mlx_transformer(
         else:
             x = x + mx.addmm(layer["ob"], context, layer["ow"].T)
 
-        h = norm(x, layer["n2w"], layer["n2b"], carry)
-        if plan.fuse_gelu is not None and not half:
+        if fuse_ln_ffn is not None:
+            # One kernel for LayerNorm, GEMM and GELU. `fiw` is [ffn_dim,
+            # d_model], the [N, K] layout the kernel takes, so the prepacked
+            # weight keeps that layout and needs no `.T`.
+            stats = layer_norm_stats(x, LAYER_NORM_EPS, pre_bias=carry)
+            bm, bn, bk, wm, wn = fuse_ln_ffn
+            h = steel_addmm(
+                layer["ln2c3"], x, layer["ln2w"], transpose_b=True, gelu=True,
+                bm=bm, bn=bn, bk=bk, wm=wm, wn=wn,
+                rowstat=stats, lnc1=layer["ln2c1"], lnc2=layer["ln2c2"])
+        elif plan.fuse_gelu is not None and not half:
+            h = norm(x, layer["n2w"], layer["n2b"], carry)
             # One kernel, not two. The GELU runs on the accumulator tile in
             # registers, so the pre-activation never reaches DRAM. `fiw` is
             # [ffn_dim, d_model], which is the [N, K] layout the kernel
@@ -740,6 +816,7 @@ def _mlx_transformer(
             h = steel_addmm(layer["fib"], h, layer["fiw"], gelu=True,
                             bm=bm, bn=bn, bk=bk, wm=wm, wn=wn)
         else:
+            h = norm(x, layer["n2w"], layer["n2b"], carry)
             h = mlx_nn.gelu(mx.addmm(layer["fib"], h, layer["fiw"].T))
         if defer:
             x = mx.addmm(x, h, layer["fow"].T)
@@ -877,6 +954,40 @@ class UserOptimizedTransformer(BaselineTransformer):
                 ).reshape(3 * num_heads * pad)
             layer["qkvw"] = weight
             layer["qkvb"] = bias
+
+        # Row 46. Fold each LayerNorm into the GEMM below it.
+        #
+        # `carry` is the deferred residual bias of row 36. It is a pure
+        # function of the weights, so the running total is built HERE and not
+        # once for every call. That is the article's optimization #1: the
+        # constant work moves to load time.
+        #
+        # The order matters. `carry` before the ln1 of layer i holds every
+        # bias of the layers below it. `carry` before the ln2 of layer i also
+        # holds that layer's own out_proj bias.
+        if self.plan.fuse_ln_qkv is not None or self.plan.fuse_ln_ffn is not None:
+            defer = self.plan.defer_bias
+            carry = None
+            for layer in self._mlx_layers:
+                if self.plan.fuse_ln_qkv is not None:
+                    (layer["ln1w"], layer["ln1c1"], layer["ln1c2"],
+                     layer["ln1c3"]) = layer_norm_constants(
+                        layer["n1w"], layer["n1b"], layer["qkvw"],
+                        layer["qkvb"], transpose_b=False, carry=carry)
+                if defer:
+                    carry = layer["ob"].astype(mx.float32) if carry is None \
+                        else carry + layer["ob"].astype(mx.float32)
+                if self.plan.fuse_ln_ffn is not None:
+                    (layer["ln2w"], layer["ln2c1"], layer["ln2c2"],
+                     layer["ln2c3"]) = layer_norm_constants(
+                        layer["n2w"], layer["n2b"], layer["fiw"],
+                        layer["fib"], transpose_b=True, carry=carry)
+                if defer:
+                    carry = carry + layer["fob"].astype(mx.float32)
+            # The final LayerNorm has no GEMM below it, so it keeps the
+            # ordinary kernel and absorbs the whole deferred bias. The block
+            # rebuilds `carry` at run time for that one call, which is two
+            # small operations for each layer on a (d_model,) vector.
 
         # One variant for each mask form. `padded` changes the graph, so it
         # cannot be a traced argument. Two variants compile at most.

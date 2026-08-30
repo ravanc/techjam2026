@@ -21,6 +21,22 @@ For each stage it reports:
     limit       the larger of %comp and %mem names the limit. When both are
                 small the stage is LAUNCH bound: it does not fill the GPU.
 
+**%mem READS HIGH, AND CAN PASS 100%.** `ms` has FLOOR_MS subtracted, and
+GB/s comes from `ms`. PEAK_GBPS does NOT have it subtracted: it is a raw
+`x * 2.0` reading. So the two sides of the ratio are measured differently,
+and %mem overstates by roughly `raw / (raw - FLOOR_MS)`.
+
+Measured at the shape 6 `ln1`: `ms` 0.9477, `raw` 1.2492, both for 128 MiB.
+The `ms` rate is 141.6 GB/s and %mem prints 110.6. The `raw` rate is
+107.4 GB/s, and that agrees with the 109.0 GB/s that a 64 MiB `x * 2.0`
+reaches in the table below, and with a standalone `fast_layernorm` at the
+same size (1.305 ms, 107.5 GB/s).
+
+So read %mem as a rank, not as a fraction of the roof. To compare a stage
+against the roof, use `raw`. A reading above 100% is this bias, not a stage
+that beat physics. The same bias inflates %comp, which is why shape 8
+prints 100.4% on a GEMM.
+
 The ridge point of this machine is 4.06e12 / 128e9 = 31.7 FLOP/byte. A stage
 below the ridge cannot reach the arithmetic peak whatever the kernel does.
 

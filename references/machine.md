@@ -56,6 +56,15 @@ Use these to tell a slow kernel from a shape that is simply small.
 Use the measured 128 GB/s as the roof, not the 150 GB/s specification. A
 kernel cannot exceed what a plain copy reaches.
 
+**Measure the stage the same way you measured the roof.** The 128 GB/s above
+is a raw reading: it includes one `mx.eval` + `mx.synchronize` round trip.
+`profiling/stage_roofline.py` subtracts that round trip from its stage times
+but not from this roof, so its `%mem` column overstates and can pass 100%.
+Compare its `raw` column against this roof, not its `ms` column. Measured on
+the shape 6 `ln1`, which moves 128 MiB: `ms` 0.9477 (141.6 GB/s, prints
+110.6%) against `raw` 1.2492 (107.4 GB/s, the true figure). See
+OPTIMIZATIONS.md row 43.
+
 **An array under 64 MiB does not reach the roof.** Measured with `x * 2.0`,
 reading plus writing:
 

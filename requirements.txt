@@ -1,0 +1,23 @@
+# Dependencies for the transformer benchmark.
+#
+# Install:
+#     python3 -m venv .venv
+#     .venv/bin/python3 -m pip install -r requirements.txt
+#
+# The versions are exact, because the benchmark compares measured times.
+# A different torch version gives a different CPU baseline, and
+# `scoreboard.py` puts the torch version in the CPU cache key.
+#
+# The project runs on Apple silicon with Metal. `mlx-metal` holds the GPU
+# backend, and `pip` installs it with `mlx` on that platform.
+#
+# `steel_gemm.py` and `steel_attention.py` read the MLX Metal headers from
+# the installed `mlx` package. `mlx_kernels.py` finds them at any install
+# layout. Set `MLX_KERNELS_DIR` to override the search.
+
+mlx==0.32.2
+numpy==2.5.2
+torch==2.13.0
+
+# Lint only. `pyflakes` checks the source. It is not needed to run a sweep.
+pyflakes==3.4.0
