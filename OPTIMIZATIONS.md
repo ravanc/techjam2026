@@ -55,7 +55,7 @@ Status:
 | 34 | Read q, k and v as strided views, and write the head layout directly | **KEPT** | `steel_attention.py` `steel_attention()`, called at `_attention()` L511, merge at `_mlx_transformer()` L631 | every shape on the steel path: 1-7, 11, 12, 13 | **1.239x FLOP-weighted** (MLX 1077.6 ms to 869.7 ms). Shape 5 1.336x, shape 6 **1.290x**, shape 1 1.301x, shape 11 1.225x, shape 13 1.182x. Two controls: MPS held at **1.000x** across the two sweeps, and the three non-steel shapes 8, 9 and 10 moved 1.006x, 1.002x and 1.013x. All 13 shapes PASS, `max_abs` 9.54e-07 to 2.65e-06. 18/18 padding cases bit exact |
 | 35 | Fuse the residual add into the LayerNorm kernel | **RULED OUT** | — | — | **Superseded by row 36, never built.** Row 36 reaches the same prize from the other side: it gives the residual add to the GEMM C operand and defers the bias into the LayerNorm. So the residual add is no longer a kernel, and there is nothing left for this row to fuse. The measurement below still stands and is why row 36 exists |
 | 36 | Defer the residual biases, and give the residual add to the GEMM C operand | **KEPT** | `fast_layernorm.py` `layer_norm(pre_bias=)` L154; block at `_mlx_transformer()` L653, L696 and L705; gated at `plan_kernels()` L480 | float32, unpadded, `d_model < 256`. Shapes 1-7 and 9-13. Shape 8 keeps the plain path | **1.132x FLOP-weighted** (MLX 869.7 ms to 768.6 ms over the 13 shapes). Shape 6 **1.164x**, shape 11 1.133x, shape 9 1.128x, shape 1 1.117x, shape 10 1.114x, shape 13 1.112x. Two controls: **shape 8 holds at 1.000x** with `defer_bias=False`, and MPS held at 1.013x across the two sweeps. All 13 shapes PASS, `max_abs` 1.19e-06 to 2.65e-06. 18/18 padding cases bit exact |
-| 37 | A wide `fast_layernorm` variant, so shape 8 reaches row 36 | **OPEN** | — | shape 8 only (`d_model` 1024), 21.3% of the FLOP weight | not tried. **Row 46 is now KEPT, and it does NOT subsume this row.** An earlier note here said it would. That was wrong: row 46 removes the need for a `pre_bias` hook at `ln1` and `ln2`, because the carry goes into its `c3` constant, but the FINAL LayerNorm still has no GEMM below it and still needs the carry. So shape 8 runs row 46 with `defer_bias=False` today. **The cheap fix is not this row at all**: add `x = x + carry` once before the final norm, which is ONE elementwise pass for the whole model instead of two for each layer. Measure that before building a wide `fast_layernorm`. The rest of this row still stands: Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.53 ms of the 32.51 ms layer, or 4.7%**, so about **1.0% FLOP-weighted**. Measured directly after row 36: the two residual adds are 0.785 ms and 0.834 ms, and the C operand would cost 0.043 ms each. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
+| 37 | Defer the residual biases on shape 8, by adding the carry once before the final LayerNorm | **KEPT** | the gate at `plan_kernels()` `use_defer_bias`; the add at `_mlx_transformer()` `norm()` | float32, unpadded, and both `ln1` and `ln2` folded by row 46. **Shape 8** |  **shape 8 1.042x** (MLX 124.911 ms to 119.931 ms), against a **clean 0.996x MPS control on the same shape**. An isolated single-shape run gave 1.044x, so the two agree. Worth about **0.7% FLOP-weighted**: 4.98 ms of the 681.4 ms total. The wide `fast_layernorm` this row originally proposed was NOT built, and it is not needed. **What this row became.** It was "a wide `fast_layernorm`, so shape 8 reaches row 36". Row 46 replaced the need for that. Row 36 needed a `pre_bias` hook on every LayerNorm, and only `fast_layernorm` had one, so shape 8 (`d_model` 1024) could not defer. Row 46 folds `ln1` and `ln2` into the GEMM below them and carries the bias in its `c3` constant, so neither needs a hook. Only the FINAL LayerNorm still does, and it has no GEMM below it. So the fix is one `x = x + carry` before that single call: **one pass over the activation for the whole model, against two deferred residual adds in every layer**. No new kernel. An earlier note here said it would. That was wrong: row 46 removes the need for a `pre_bias` hook at `ln1` and `ln2`, because the carry goes into its `c3` constant, but the FINAL LayerNorm still has no GEMM below it and still needs the carry. So shape 8 runs row 46 with `defer_bias=False` today. **The cheap fix is not this row at all**: add `x = x + carry` once before the final norm, which is ONE elementwise pass for the whole model instead of two for each layer. Measure that before building a wide `fast_layernorm`. The rest of this row still stands: Shape 8 is the one shape row 36 cannot serve, because `mx.fast.layer_norm` has no `pre_bias` argument. The C operand is nearly free there: **0.043 ms** against 0.708 ms for the separate add, because the shape is compute bound and the extra read hides under the matmul. Two residual adds is about **1.53 ms of the 32.51 ms layer, or 4.7%**, so about **1.0% FLOP-weighted**. Measured directly after row 36: the two residual adds are 0.785 ms and 0.834 ms, and the C operand would cost 0.043 ms each. The cost is a `fast_layernorm` that holds `ceil(1024/32) = 32` floats per lane, against 8 at `d_model` 248 today. Register pressure is the open question, and row 31 measured that MLX already runs at copy speed at that width, so the LayerNorm itself has nothing to win. The `pre_bias` hook is the only reason to build it |
 | 38 | Retune the steel attention block shape (`bq`, `bk`, `wm`) against the MFA parameter table | **REVERTED** | — | — | the default `bq=32, bk=32, wm=4` is best on every steel shape. The best other config anywhere is **1.002x** (shape 13), inside the 1% noise floor. MFA's own `bq=16` gives 1.000x, 0.956x, 0.929x, 0.824x and 0.895x on the five cases |
 | 39 | Shift the edge block in the steel GEMM, so an unaligned tile stays branch free | **RULED OUT** | — | — | nothing to unlock. `choose_tile()` never returns `None` on any appendix shape: every M, N and K is a power of two, and at least two tiles divide all 13. Shape 2 loses the fused GELU to the `rows >= 512` gate, not to divisibility |
 | 40 | Route the projections with no epilogue through the hoisted steel GEMM | **REVERTED** | — | — | `mx.addmm` is already optimal. Over 8 tiles on 5 real projection sizes, the best steel tile reaches **1.005x**, and `max_abs` is **0.00e+00** everywhere, which proves MLX dispatches `addmm` to the same steel kernel with a good tile. Shape 6 `qkv proj` sits at 83.5% of matmul peak because K=128 is short, not because of the tile |
@@ -1793,7 +1793,87 @@ Shape 8 carries 21.3% of the FLOP weight and gains nothing, because
 there (0.043 ms), so a wide `fast_layernorm` variant would collect about
 1.53 ms of its 32.51 ms layer, or 4.7%. That is row 37, and it is OPEN.
 
-## 37. A wide `fast_layernorm` variant, so shape 8 reaches row 36 — OPEN
+## 37. Defer the residual biases on shape 8 — KEPT
+
+**Built as something other than what this row proposed.** The original plan
+was a wide `fast_layernorm`, so shape 8 could reach row 36's `pre_bias` hook.
+That kernel was never written, and it is not needed. Row 46 removed the
+reason it existed.
+
+### Why row 46 unblocked it
+
+Row 36 defers each residual bias into a `carry` vector, and every LayerNorm
+in the block must then apply that carry. Only `fast_layernorm` had a
+`pre_bias` hook, and it serves a row width under 256, so shape 8 could not
+defer at all.
+
+Row 46 folds `ln1` and `ln2` into the GEMM below each of them, and the carry
+rides in the `c3` constant that the GEMM's C operand adds. Neither norm needs
+a hook any more.
+
+That leaves exactly one LayerNorm that still needs the carry: the final one,
+which has no GEMM below it. So the whole fix is:
+
+    if pre is not None and not plan.fast_layer_norm:
+        value = value + pre     # once, for the whole model
+        pre = None
+
+`layer_norm(x, w, b, eps, pre_bias=c)` is `layer_norm(x + c, w, b, eps)` by
+definition, so the arithmetic is unchanged.
+
+**The trade.** One pass over the activation, once per forward, against two
+deferred residual adds in every layer. Shape 8 has 4 layers, so it trades one
+pass for eight.
+
+The gate widened to match:
+
+    use_defer_bias = use_fast_ln or (
+        fuse_ln_qkv is not None and fuse_ln_ffn is not None)
+
+Both tiles are required. If only one norm folds, the other still needs a hook
+that `mx.fast.layer_norm` does not have.
+
+### The measurement
+
+    .venv/bin/python3 scoreboard.py --cpu-cache --label "row 37 cheap form, re-measured: shape 8 defers its residual biases"
+
+| | MLX before | MLX after | ratio | MPS control |
+|---|---:|---:|---:|---:|
+| shape 8 | 124.911 | **119.931** | **1.042x** | 165.374 -> 165.999, **0.996x** |
+
+An isolated single-shape run on a quieter machine gave 124.911 -> 119.678,
+**1.044x**. The two agree.
+
+Worth about **0.7% FLOP-weighted**: 4.98 ms of the 681.4 ms total.
+
+Accuracy on shape 8: PASS, `max_abs` 3.22e-06 against 3.34e-06 before, so it
+got slightly BETTER. That is expected: a deferred bias keeps the residual
+stream smaller for longer. 18 of 18 padding cases pass.
+
+### Read the total of that sweep with care
+
+**The sweep-wide MPS control moved 0.974x, which is outside the 1% noise
+floor, so the sweep total cannot score this change.** `mysqld` was holding
+76% of a CPU for the whole run. The per-shape control is what decides here,
+and shape 8's own MPS held at 0.996x while its MLX gained 4.2%.
+
+Every shape this change does NOT touch tracked its own MPS control:
+
+| shape | MLX ratio | MPS control |
+|---:|---:|---:|
+| 1 | 0.976x | 0.972x |
+| 4 | 0.942x | 0.936x |
+| 5 | 0.962x | 0.976x |
+| 13 | 0.966x | 0.971x |
+
+So nothing regressed. The machine was slower, and the untouched shapes
+followed it.
+
+### The old plan, kept because it is still the fallback
+
+The wide `fast_layernorm` is still the answer if a future shape folds only
+one of its two norms. What it would cost is unchanged from the original
+note:
 
 Shape 8 is the only shape that row 36 cannot serve. Its `d_model` is 1024, and
 `plan_kernels()` sends every width of 256 and above to `mx.fast.layer_norm`,

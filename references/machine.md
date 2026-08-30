@@ -56,6 +56,19 @@ Use these to tell a slow kernel from a shape that is simply small.
 Use the measured 128 GB/s as the roof, not the 150 GB/s specification. A
 kernel cannot exceed what a plain copy reaches.
 
+**Check for load that is not Python.** The rule 1 command in CLAUDE.md
+greps for `.venv/bin/python3`, so it finds a competing sweep and nothing
+else. It missed a `mysqld` holding 76% of a CPU, and that run came in at 5.3
+minutes against 3.0 for the same sweep, with the MPS control 5% slow. Check
+the whole machine:
+
+    ps -Ao %cpu,%mem,command -r | head -6
+
+Anything above a few percent that is not yours makes the reading false. The
+MPS column is the detector: `BaselineTransformer` never changes, so if MPS
+moved more than about 1%, the machine moved and the sweep cannot score a
+change. A per-shape MPS control still can.
+
 **Measure the stage the same way you measured the roof.** The 128 GB/s above
 is a raw reading: it includes one `mx.eval` + `mx.synchronize` round trip.
 `profiling/stage_roofline.py` subtracts that round trip from its stage times

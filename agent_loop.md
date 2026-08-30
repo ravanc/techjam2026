@@ -348,6 +348,58 @@ and stays OPEN — and it now records a cheaper fix than itself: one
 - **Gate:** PASSED. Row 46 is KEPT and committed.
 - **Next:** row 44, then the shape 8 carry note under row 37.
 
+### Turn 5 — row 37: KEPT, and it cost no new kernel
+
+**The queue was wrong, and turn 4 made it wrong.** Row 44 led the queue. But
+row 46 had just unblocked row 37, and row 37 turned out to be a four line
+change for 0.7% FLOP-weighted, against hours of kernel work for row 44's 5%.
+Effort per unit of win decided the order, not the size of the win.
+
+**What it is.** Row 36 defers each residual bias into a `carry`, and every
+LayerNorm must then apply it. Only `fast_layernorm` had a `pre_bias` hook,
+and it stops at a row width of 256, so shape 8 could not defer.
+
+Row 46 folds `ln1` and `ln2` into the GEMM below them, and the carry rides in
+the `c3` constant. So only the FINAL LayerNorm still needs the carry, and the
+fix is to add it there, once for the whole model:
+
+    if pre is not None and not plan.fast_layer_norm:
+        value = value + pre
+        pre = None
+
+One pass over the activation per forward, against two deferred residual adds
+in every layer.
+
+**The gate:**
+
+| Gate | Result |
+|---|---|
+| 1. Accuracy | shape 8 PASS at `max_abs` 3.22e-06, BETTER than 3.34e-06 before |
+| 2. Padding | 18/18 pass |
+| 3. End to end | shape 8 **124.911 -> 119.931 ms, 1.042x**. About 0.7% FLOP-weighted |
+| 4. Control | **shape 8 MPS held at 0.996x** |
+
+**Gate 4 failed at the sweep level, and the loop had to handle that.** The
+sweep-wide MPS control moved 0.974x, outside the 1% floor, because `mysqld`
+was holding 76% of a CPU. So the sweep total could not score the change.
+
+Two things saved the reading:
+
+1. Shape 8 is the ONLY shape this change touches, and its own MPS control
+   held at 0.996x while its MLX gained 4.2%.
+2. Every untouched shape tracked its own MPS control within a point or two,
+   so nothing regressed.
+
+An isolated single-shape run on a quieter machine gave 1.044x independently.
+
+**The rule this exposed.** CLAUDE.md's rule 1 command greps for
+`.venv/bin/python3`, so it detects a competing sweep and nothing else. It
+cannot see a busy database. Recorded in `references/machine.md` with a
+whole-machine check.
+
+- **Gate:** PASSED on the per-shape control.
+- **Next:** row 44, the last item in the queue.
+
 ### The state at the end of turn 4
 
 No model code has changed. Four turns of the loop produced four measured
@@ -358,7 +410,7 @@ facts and no regression risk:
 | 43 route 1 | OPEN | **REVERTED**, +2.243 ms | `profiling/tile_probe.py --row 43` |
 | 46 (was 43 route 2) | not stated | **KEPT, 1.060x FLOP-weighted** | the four-gate sweep |
 | 44 | OPEN, estimated from a memory floor | **OPEN, estimate corrected** to 5.0% of shape 6. Tile is affordable | `profiling/tile_probe.py --row 44` |
-| 37 | OPEN | **still OPEN.** Turn 3 wrongly called it subsumed; turn 4 corrected that and found a cheaper fix | the sweep plan output |
+| 37 | OPEN | **KEPT, shape 8 1.042x.** Turn 3 wrongly called it subsumed; turn 4 corrected that and found a cheaper fix; turn 5 built the cheap fix and it needed no new kernel | the per-shape control |
 
 Plus one reference correction: `stage_roofline.py` `%mem` overstates, and
 can pass 100%, because it subtracts the round trip from the stage but not

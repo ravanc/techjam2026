@@ -497,15 +497,20 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
     # Defer the residual biases into the LayerNorm, and give the residual add
     # to the projection GEMM as its C operand. See OPTIMIZATIONS.md row 36.
     #
-    # It needs the custom LayerNorm, because only that kernel takes a
-    # `pre_bias`. `mx.fast.layer_norm` has no such argument, so shape 8
-    # (d_model 1024) keeps the plain path.
+    # Every LayerNorm in the block must be able to take the deferred bias, or
+    # the block cannot defer it. Two kernels can:
+    #
+    #   `fast_layernorm`  through its `pre_bias` argument (row 36)
+    #   row 46            through its `c3` constant, built at weight build
+    #
+    # `mx.fast.layer_norm` can do neither, so a shape that uses it for either
+    # `ln1` or `ln2` keeps the plain path. The gate is set below, after the
+    # row 46 tiles are known.
     #
     # The padded path also keeps the plain path. It ends each layer with
     # `mx.where(valid_tokens, x, 0)`, and that does not commute with a
     # deferred bias: zeroing `x_hat` does not zero `x_hat + c`. `padded` is a
     # compile time flag, so the two graphs stay separate.
-    use_defer_bias = use_fast_ln
 
     # Fold GELU into the `ffn_in` GEMM epilogue. See OPTIMIZATIONS.md row 33.
     #
@@ -550,6 +555,17 @@ def plan_kernels(config: TransformerConfig, itemsize: int) -> KernelPlan:
         fuse_ln_qkv = steel_gemm_tile(
             rows, 3 * config.d_model, config.d_model, transpose_b=False)
         fuse_ln_ffn = steel_gemm_tile(rows, config.ffn_dim, config.d_model)
+
+    # Row 37, the cheap form. Row 46 removed the reason `defer_bias` needed
+    # `fast_layernorm`: when BOTH `ln1` and `ln2` fold into the GEMM below
+    # them, the carry rides in the `c3` constant and no `pre_bias` hook is
+    # needed. The FINAL LayerNorm has no GEMM below it, so `_mlx_transformer()`
+    # adds the carry to `x` once, for the whole model, before that one call.
+    #
+    # This is what lets shape 8 defer its residual biases. Shape 8 is 21.3% of
+    # the FLOP weight and `mx.fast.layer_norm` serves its width.
+    use_defer_bias = use_fast_ln or (
+        fuse_ln_qkv is not None and fuse_ln_ffn is not None)
 
     return KernelPlan(
         fuse_qkv=True,
@@ -662,6 +678,16 @@ def _mlx_transformer(
 
     def norm(value, weight, bias, pre=None):
         value = value.astype(mx.float32)
+        if pre is not None and not plan.fast_layer_norm:
+            # `mx.fast.layer_norm` has no `pre_bias`, so add the carry here.
+            # `layer_norm(x, w, b, eps, pre_bias=c)` is `layer_norm(x + c, ...)`
+            # by definition, so this is the same arithmetic.
+            #
+            # This costs one pass over `x`. It runs ONCE for the whole model,
+            # at the final LayerNorm, and it buys two deferred residual adds
+            # in every layer. See OPTIMIZATIONS.md row 37.
+            value = value + pre
+            pre = None
         if pre is None:
             result = norm_kernel(value, weight, bias, LAYER_NORM_EPS)
         else:

@@ -47,7 +47,12 @@ through Metal.
 | Best MLX rate | 4.552 TFLOP/s (shape 13) |
 
 The MLX column totals **681.4 ms** over the 13 shapes. That total is the
-score this project moves: the last change, row 46, took it from 722.3 ms.
+score this project moves: row 46 took it from 722.3 ms.
+
+Row 37 landed after this sweep and moves shape 8 further, to **119.9 ms**
+from the 124.9 ms above, against a shape 8 MPS control that held at 0.996x.
+The sweep it came from ran under external CPU load, so its other columns are
+not comparable and the table above is the last clean full sweep.
 
 **† the CPU column came from the cache**, not from this sweep, so the two
 speedup columns against it mix two sweeps. See the `--cpu-cache` rule in
@@ -121,7 +126,6 @@ once. What is left at run time is two floats for each row:
 |---:|---|---|---|
 | 44 | `ffn_in` writes `hidden` and `ffn_out` reads it back | about **5.0%** of the shape 6 layer | Chaining the two GEMMs deletes a 128 MiB round trip. The tile it needs is measured: `bn = 128` costs 0.884x, and the threadgroup holds `hidden` at 28.5 KiB of 32. It is a two GEMM kernel with a threadgroup handoff, so the cost is difficulty |
 | 21, 26 | MLX never calls its own `bd192` and `bd256` attention kernels | shape 8, 21.3% of the FLOP weight | `head_dim` 256 takes the fallback. `head_dim` cannot pad down, and a head cannot split. The threadgroup memory for `bd256` exceeds the 32 KiB limit |
-| 37 | Shape 8 still runs with `defer_bias=False` | about **1.0%** FLOP-weighted | Row 46 removed the need for a `pre_bias` hook at `ln1` and `ln2`, but the FINAL LayerNorm has no GEMM below it and still needs the carry. The cheap fix is one `x = x + carry` before that norm, not a wide `fast_layernorm`. Measure it before building the kernel |
 | — | qkv proj | 3.56 ms, 31% of the shape 6 layer | The largest stage, and it already runs at 89% of the matmul peak. It holds 43% of the block FLOPs because it is three projections in one |
 | — | Small shapes are launch-bound | shapes 2, 3, 7 and 12 | Under 0.2% of the FLOP weight together. Shape 2 declines every fused path because it has 128 rows, under the 512 row gate |
 
@@ -148,6 +152,7 @@ largest wins:
 | 29 | `mx.addmm` for every projection, so the GPU adds the bias inside the matmul | 1.096x FLOP-weighted |
 | 33 | Fold GELU into the `ffn_in` matmul epilogue | 1.064x FLOP-weighted |
 | 46 | Absorb the LayerNorm into the GEMM weights, and apply it in the epilogue | **1.060x** FLOP-weighted |
+| 37 | Defer the residual biases on shape 8 too, by adding the carry once before the final LayerNorm | shape 8 **1.042x** |
 | 7 | A shape-aware kernel plan (`KernelPlan`) | 1.57x at shape 13 |
 | 10 | Batch chunking, full depth for each chunk | peak 9.16 GiB to 2.68 GiB |
 | 23 | Return the output as a view of MLX memory, not a copy | 71.6 ms of 1590.2 ms at shape 6 |
