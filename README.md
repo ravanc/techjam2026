@@ -25,34 +25,24 @@ through Metal.
 
 | # | Shape | CPU ms † | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 61.252 | 17.270 | 3.506 | 3.55x | **17.47x** | 4.93x |
-| 2 | B1 D128 H4 S128 | 2.571 | 1.617 | 0.651 | 1.59x | **3.95x** | 2.48x |
-| 3 | B4 D128 H4 S128 | 7.169 | 1.958 | 0.643 | 3.66x | **11.15x** | 3.04x |
-| 4 | B16 D128 H4 S128 | 19.373 | 4.529 | 1.174 | 4.28x | **16.50x** | 3.86x |
-| 5 | B128 D128 H4 S128 | 139.502 | 33.600 | 6.681 | 4.15x | **20.88x** | 5.03x |
-| 6 | B10000 D128 H4 S128 | 15777.204 | 2673.760 | 489.310 | 5.90x | **32.24x** | 5.46x |
-| 7 | B64 D32 H4 S128 | 25.959 | 11.404 | 1.055 | 2.28x | **24.59x** | 10.80x |
-| 8 | B64 D1024 H4 S128 | 470.854 | 165.374 | 124.911 | 2.85x | **3.77x** | 1.32x |
-| 9 | B64 D128 H1 S128 | 35.099 | 7.951 | 3.602 | 4.41x | **9.74x** | 2.21x |
-| 10 | B64 D128 H2 S128 | 46.106 | 12.975 | 3.592 | 3.55x | **12.84x** | 3.61x |
-| 11 | B64 D128 H16 S128 | 130.289 | 42.056 | 3.602 | 3.10x | **36.17x** | 11.68x |
-| 12 | B64 D128 H4 S32 | 12.224 | 3.265 | 1.115 | 3.74x | **10.96x** | 2.93x |
-| 13 | B64 D128 H4 S1024 | 1899.325 | 567.703 | 41.518 | 3.35x | **45.75x** | 13.67x |
+| 1 | B64 D128 H4 S128 | 61.252 | 17.404 | 3.460 | 3.52x | **17.70x** | 5.03x |
+| 2 | B1 D128 H4 S128 | 2.571 | 1.594 | 0.563 | 1.61x | **4.57x** | 2.83x |
+| 3 | B4 D128 H4 S128 | 7.169 | 1.960 | 0.632 | 3.66x | **11.34x** | 3.10x |
+| 4 | B16 D128 H4 S128 | 19.373 | 4.748 | 1.197 | 4.08x | **16.18x** | 3.97x |
+| 5 | B128 D128 H4 S128 | 139.502 | 34.021 | 7.235 | 4.10x | **19.28x** | 4.70x |
+| 6 | B10000 D128 H4 S128 | 15777.204 | 2604.115 | 480.810 | 6.06x | **32.81x** | 5.42x |
+| 7 | B64 D32 H4 S128 | 25.959 | 11.382 | 1.070 | 2.28x | **24.26x** | 10.64x |
+| 8 | B64 D1024 H4 S128 | 470.782 | 166.892 | 120.164 | 2.82x | **3.92x** | 1.39x |
+| 9 | B64 D128 H1 S128 | 35.099 | 8.271 | 3.667 | 4.24x | **9.57x** | 2.26x |
+| 10 | B64 D128 H2 S128 | 46.106 | 13.063 | 3.582 | 3.53x | **12.87x** | 3.65x |
+| 11 | B64 D128 H16 S128 | 130.289 | 42.156 | 3.714 | 3.09x | **35.08x** | 11.35x |
+| 12 | B64 D128 H4 S32 | 12.224 | 3.306 | 1.133 | 3.70x | **10.79x** | 2.92x |
+| 13 | B64 D128 H4 S1024 | 1899.325 | 569.699 | 42.224 | 3.33x | **44.98x** | 13.49x |
 
-| Metric | Value |
-|---|---:|
-| Median MLX speedup over CPU | **16.50x** |
-| Range | 3.77x to 45.75x |
-| Median MLX rate | 2.385 TFLOP/s |
-| Best MLX rate | 4.552 TFLOP/s (shape 13) |
-
-The MLX column totals **681.4 ms** over the 13 shapes. That total is the
-score this project moves: row 46 took it from 722.3 ms.
-
-Row 37 landed after this sweep and moves shape 8 further, to **119.9 ms**
-from the 124.9 ms above, against a shape 8 MPS control that held at 0.996x.
-The sweep it came from ran under external CPU load, so its other columns are
-not comparable and the table above is the last clean full sweep.
+The MLX column totals **669.5 ms** over the 13 shapes. That total is the
+score this project moves. Rows 46 and 37 took it from 722.3 ms, and about a
+fifth of that is machine drift: the MPS control moved 1.9% across the same
+two sweeps, so the attributable gain is about **1.068x**.
 
 **† the CPU column came from the cache**, not from this sweep, so the two
 speedup columns against it mix two sweeps. See the `--cpu-cache` rule in
@@ -63,9 +53,9 @@ Accuracy: all 13 shapes PASS at `atol=0.002`, `rtol=0.02`, against the CPU
 baseline, with **zero failed elements** on every shape, including
 0 / 163,840,000 at shape 6. `max_abs` runs 1.07e-06 to 3.34e-06, against an `atol` of 0.002.
 
-The shape 6 CPU entry above was re-measured on this sweep, at 15777.204 ms
-against 14639.960 ms on the sweep before. Nothing in the model caused that.
-It is why the rule below exists.
+The shape 6 CPU entry above drifted from 14639.960 ms to 15777.204 ms on an
+unchanged baseline. Nothing in the model caused that. It is why the rule
+below exists.
 
 **Read the MPS column, not only the CPU column.** The CPU baseline moves with
 machine load and chip temperature. It drifted up to 45.9% between two sweeps
@@ -152,7 +142,7 @@ largest wins:
 | 29 | `mx.addmm` for every projection, so the GPU adds the bias inside the matmul | 1.096x FLOP-weighted |
 | 33 | Fold GELU into the `ffn_in` matmul epilogue | 1.064x FLOP-weighted |
 | 46 | Absorb the LayerNorm into the GEMM weights, and apply it in the epilogue | **1.060x** FLOP-weighted |
-| 37 | Defer the residual biases on shape 8 too, by adding the carry once before the final LayerNorm | shape 8 **1.042x** |
+| 37 | Defer the residual biases on shape 8 too, by adding the carry once before the final LayerNorm | shape 8 **1.040x**, on a 0.991x control |
 | 7 | A shape-aware kernel plan (`KernelPlan`) | 1.57x at shape 13 |
 | 10 | Batch chunking, full depth for each chunk | peak 9.16 GiB to 2.68 GiB |
 | 23 | Return the output as a view of MLX memory, not a copy | 71.6 ms of 1590.2 ms at shape 6 |

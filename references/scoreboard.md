@@ -12,7 +12,7 @@ FLOP count comes from the model definition, not from a specification.
 - CPU is the reference for both accuracy and speedup.
 - Each call is bracketed by a device synchronize. Rounds alternate the
   backend order, so no backend always runs on a cold chip.
-- sweep took 3.2 minutes
+- sweep took 3.0 minutes
 - **† marks a CPU reading that came from the cache, not from this
   sweep.** The earlier sweep ran under a different machine load, at
   a different chip temperature. The speedup beside a marked reading
@@ -26,19 +26,19 @@ MFU appears once, in its own section, and it is provisional. See
 
 | # | Shape | CPU ms | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 44.858 † | 17.769 | 3.592 | 2.52x | **12.49x** | 4.95x |
-| 2 | B1 D128 H4 S128 | 1.603 † | 1.624 | 0.621 | 0.99x | **2.58x** | 2.61x |
-| 3 | B4 D128 H4 S128 | 4.788 † | 2.108 | 0.750 | 2.27x | **6.38x** | 2.81x |
-| 4 | B16 D128 H4 S128 | 12.964 † | 4.841 | 1.246 | 2.68x | **10.41x** | 3.89x |
-| 5 | B128 D128 H4 S128 | 120.621 † | 34.414 | 6.944 | 3.51x | **17.37x** | 4.96x |
-| 6 | B10000 D128 H4 S128 | 15777.204 † | 2747.871 | 479.310 | 5.74x | **32.92x** | 5.73x |
-| 7 | B64 D32 H4 S128 | 27.904 † | 11.409 | 1.019 | 2.45x | **27.38x** | 11.19x |
-| 8 | B64 D1024 H4 S128 | 470.782 † | 165.999 | 119.931 | 2.84x | **3.93x** | 1.38x |
-| 9 | B64 D128 H1 S128 | 35.961 † | 7.982 | 3.657 | 4.51x | **9.83x** | 2.18x |
-| 10 | B64 D128 H2 S128 | 51.488 † | 12.892 | 3.471 | 3.99x | **14.83x** | 3.71x |
-| 11 | B64 D128 H16 S128 | 141.339 † | 42.267 | 3.578 | 3.34x | **39.50x** | 11.81x |
-| 12 | B64 D128 H4 S32 | 12.794 † | 3.240 | 1.115 | 3.95x | **11.48x** | 2.91x |
-| 13 | B64 D128 H4 S1024 | 1974.807 † | 584.371 | 42.995 | 3.38x | **45.93x** | 13.59x |
+| 1 | B64 D128 H4 S128 | 44.858 † | 17.404 | 3.460 | 2.58x | **12.97x** | 5.03x |
+| 2 | B1 D128 H4 S128 | 1.603 † | 1.594 | 0.563 | 1.01x | **2.85x** | 2.83x |
+| 3 | B4 D128 H4 S128 | 4.788 † | 1.960 | 0.632 | 2.44x | **7.58x** | 3.10x |
+| 4 | B16 D128 H4 S128 | 12.964 † | 4.748 | 1.197 | 2.73x | **10.83x** | 3.97x |
+| 5 | B128 D128 H4 S128 | 120.621 † | 34.021 | 7.235 | 3.55x | **16.67x** | 4.70x |
+| 6 | B10000 D128 H4 S128 | 15777.204 † | 2604.115 | 480.810 | 6.06x | **32.81x** | 5.42x |
+| 7 | B64 D32 H4 S128 | 27.904 † | 11.382 | 1.070 | 2.45x | **26.08x** | 10.64x |
+| 8 | B64 D1024 H4 S128 | 470.782 † | 166.892 | 120.164 | 2.82x | **3.92x** | 1.39x |
+| 9 | B64 D128 H1 S128 | 35.961 † | 8.271 | 3.667 | 4.35x | **9.81x** | 2.26x |
+| 10 | B64 D128 H2 S128 | 51.488 † | 13.063 | 3.582 | 3.94x | **14.38x** | 3.65x |
+| 11 | B64 D128 H16 S128 | 141.339 † | 42.156 | 3.714 | 3.35x | **38.06x** | 11.35x |
+| 12 | B64 D128 H4 S32 | 12.794 † | 3.306 | 1.133 | 3.87x | **11.29x** | 2.92x |
+| 13 | B64 D128 H4 S1024 | 1974.807 † | 569.699 | 42.224 | 3.47x | **46.77x** | 13.49x |
 
 ## Achieved arithmetic rate
 
@@ -48,19 +48,19 @@ matmul, torch MPS 4.16, torch CPU 1.42.
 
 | # | Shape | GFLOP | CPU TFLOP/s | MPS TFLOP/s | **MLX TFLOP/s** | MLX token/s | Plan chosen |
 |---:|---|---:|---:|---:|---:|---:|---|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.191 | 0.483 | **2.392** | 2,280,716 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.084 | 0.083 | **0.216** | 206,064 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=none fuse_ln_qkv=none fuse_ln_ffn=none |
-| 3 | B4 D128 H4 S128 | 0.54 | 0.112 | 0.255 | **0.716** | 682,648 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.166 | 0.444 | **1.724** | 1,643,769 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.142 | 0.499 | **2.474** | 2,359,574 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 0.085 | 0.488 | **2.800** | 2,670,507 | fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.034 | 0.082 | **0.922** | 8,037,779 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=64x32x16x2x2 fuse_ln_qkv=64x32x16x2x2 fuse_ln_ffn=64x32x16x2x2 |
-| 8 | B64 D1024 H4 S128 | 429.50 | 0.912 | 2.587 | **3.581** | 68,306 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.239 | 1.076 | **2.349** | 2,240,241 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.167 | 0.666 | **2.475** | 2,360,155 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.061 | 0.203 | **2.400** | 2,289,294 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.136 | 0.539 | **1.565** | 1,837,046 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
-| 13 | B64 D128 H4 S1024 | 188.98 | 0.096 | 0.323 | **4.395** | 1,524,256 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.191 | 0.494 | **2.483** | 2,367,929 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.084 | 0.084 | **0.238** | 227,236 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=none fuse_ln_qkv=none fuse_ln_ffn=none |
+| 3 | B4 D128 H4 S128 | 0.54 | 0.112 | 0.274 | **0.850** | 810,447 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.166 | 0.452 | **1.793** | 1,710,319 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.142 | 0.505 | **2.375** | 2,264,560 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 0.085 | 0.515 | **2.791** | 2,662,175 | fuse_qkv=True causal_block=full batch_chunk=1024 pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.034 | 0.083 | **0.878** | 7,656,969 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=64x32x16x2x2 fuse_ln_qkv=64x32x16x2x2 fuse_ln_ffn=64x32x16x2x2 |
+| 8 | B64 D1024 H4 S128 | 429.50 | 0.912 | 2.573 | **3.574** | 68,173 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=False defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.239 | 1.039 | **2.342** | 2,233,903 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.167 | 0.658 | **2.398** | 2,287,203 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=False fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.061 | 0.204 | **2.313** | 2,205,894 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.136 | 0.528 | **1.540** | 1,807,059 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
+| 13 | B64 D128 H4 S1024 | 188.98 | 0.096 | 0.332 | **4.476** | 1,552,105 | fuse_qkv=True causal_block=full batch_chunk=none pad_head_dim=none steel=True fast_ln=True defer_bias=True fuse_gelu=32x64x16x2x2 fuse_ln_qkv=32x64x16x2x2 fuse_ln_ffn=32x64x16x2x2 |
 
 ## MFU — PROVISIONAL, do not quote without this note
 
@@ -74,22 +74,22 @@ number in this table scales linearly with it. Fix the constant in
 
 | # | Shape | GFLOP | FLOP share | MLX MFU | MPS MFU |
 |---:|---|---:|---:|---:|---:|
-| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 47.7% | 9.6% |
-| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 4.3% | 1.6% |
-| 3 | B4 D128 H4 S128 | 0.54 | 0.0% | 14.3% | 5.1% |
-| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 34.4% | 8.9% |
-| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 49.4% | 10.0% |
-| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 55.9% | 9.7% |
-| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 18.4% | 1.6% |
-| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 71.5% | 51.6% |
-| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 46.9% | 21.5% |
-| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 49.4% | 13.3% |
-| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 47.9% | 4.1% |
-| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 31.2% | 10.8% |
-| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 87.7% | 6.5% |
+| 1 | B64 D128 H4 S128 | 8.59 | 0.4% | 49.6% | 9.9% |
+| 2 | B1 D128 H4 S128 | 0.13 | 0.0% | 4.8% | 1.7% |
+| 3 | B4 D128 H4 S128 | 0.54 | 0.0% | 17.0% | 5.5% |
+| 4 | B16 D128 H4 S128 | 2.15 | 0.1% | 35.8% | 9.0% |
+| 5 | B128 D128 H4 S128 | 17.18 | 0.9% | 47.4% | 10.1% |
+| 6 | B10000 D128 H4 S128 | 1342.18 | 66.5% | 55.7% | 10.3% |
+| 7 | B64 D32 H4 S128 | 0.94 | 0.0% | 17.5% | 1.6% |
+| 8 | B64 D1024 H4 S128 | 429.50 | 21.3% | 71.3% | 51.4% |
+| 9 | B64 D128 H1 S128 | 8.59 | 0.4% | 46.8% | 20.7% |
+| 10 | B64 D128 H2 S128 | 8.59 | 0.4% | 47.9% | 13.1% |
+| 11 | B64 D128 H16 S128 | 8.59 | 0.4% | 46.2% | 4.1% |
+| 12 | B64 D128 H4 S32 | 1.74 | 0.1% | 30.7% | 10.5% |
+| 13 | B64 D128 H4 S1024 | 188.98 | 9.4% | 89.3% | 6.6% |
 
-- unweighted mean MLX MFU: **43.01%**
-- FLOP-weighted mean MLX MFU: **61.93%**
+- unweighted mean MLX MFU: **43.07%**
+- FLOP-weighted mean MLX MFU: **61.91%**
 
 Shape 6 alone is two thirds of the FLOP weight, so a FLOP-weighted
 score is mostly a score on shape 6.
@@ -119,10 +119,10 @@ Against the CPU baseline, at `atol=0.002` and `rtol=0.02`.
 | Metric | Value |
 |---|---:|
 | Shapes scored | 13 |
-| Median MLX speedup over CPU | **12.49x** |
-| Range of MLX speedup | 2.58x to 45.93x |
-| Median MLX rate | 2.392 TFLOP/s |
-| Best MLX rate | 4.395 TFLOP/s |
+| Median MLX speedup over CPU | **12.97x** |
+| Range of MLX speedup | 2.85x to 46.77x |
+| Median MLX rate | 2.342 TFLOP/s |
+| Best MLX rate | 4.476 TFLOP/s |
 
 ## History
 
@@ -146,6 +146,7 @@ Print it with `.venv/bin/python3 scoreboard.py --show-history`.
 | 2026-08-30T11:10:21 | `f43a374*` | row 46: absorb the LayerNorm into the GEMM weights, apply it in the epilogue | 13 | 16.50x | 2.385 |
 | 2026-08-30T11:26:17 | `b352c4f*` | row 37 cheap form: defer the residual biases wherever row 46 covers both norms, so shape 8 defers too | 13 | 12.67x | 2.345 |
 | 2026-08-30T11:30:16 | `b352c4f*` | row 37 cheap form, re-measured: shape 8 defers its residual biases | 13 | 12.49x | 2.392 |
+| 2026-08-30T11:38:23 | `e2a8d22*` | clean baseline after rows 46 and 37, quiet machine | 13 | 12.97x | 2.342 |
 
 A `*` on the commit means the working tree had uncommitted changes,
 so that reading cannot be reproduced exactly.
