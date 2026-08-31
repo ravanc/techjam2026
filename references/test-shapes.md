@@ -101,24 +101,112 @@ kernel choice cannot be correct across that range.
 | 11 | attention | 16 heads at head_dim=8. Wide parallelism, narrow reductions. |
 | 12 | latency | S=32. The causal mask throws away half of a very small tile. |
 | 13 | attention | S=1024 makes attention 73% of the work. Score matrix is 1 GiB per layer. |
-| 14 | impossible here | see below |
+| 14 | memory, and no reference | the baseline cannot run it. `shape14_harness.py` runs the MLX path. See below |
 
 ## Shape 14
 
-`appendix_cases.py` marks shape 14 as disabled.
+**The baseline cannot run this shape. The MLX path can.** Those are two
+separate facts, and an earlier version of this file ran them together and
+called the whole shape impossible. Only the first half is true.
 
 | Item | Size in float32 |
 |---|---|
-| Input `x` | 12.2 GiB |
-| Score matrix, one layer | 18.6 TiB |
+| Input `x`, whole batch | 12.2 GiB |
+| Input `x`, one batch row | 391 MiB |
+| Score matrix, one layer, whole batch | 18.6 TiB |
+| Score matrix, one layer, one batch row | 596 GiB |
 | Machine working set | 12.0 GiB |
 
-The input alone does not fit. `BaselineSelfAttention` materializes the score
-matrix, so the baseline cannot run this shape on any machine.
+`BaselineSelfAttention` materializes the score matrix, so the torch baseline
+stops with an allocation error before it computes anything. It has no run
+time at shape 14, on the CPU or on MPS. Do not report a time for it, and do
+not report a speedup: there is no baseline time to divide by.
 
-An MLX path can still run it, because `mx.fast.scaled_dot_product_attention`
-never materializes the scores. It needs a chunk loop over the batch: at
-`chunk=1` each activation is 391 MiB. See [mlx-tensorops.md](mlx-tensorops.md).
+### Why the MLX path runs it
+
+`head_dim = 1024 / 16 = 64`, which is in the fused set. So
+`mx.fast.scaled_dot_product_attention` reaches the fused flash kernel, which
+holds no score matrix. Measured with `shape14_harness.py --ladder`, at
+H=16, head_dim=64, float32, `mask="causal"`, one batch row:
+
+| S | scores if materialized | call adds | ms |
+|---:|---:|---:|---:|
+| 4,096 | 1.0 GiB | 16.0 MiB | 10.7 |
+| 16,384 | 16.0 GiB | 64.0 MiB | 168.7 |
+| 65,536 | 256.0 GiB | 256.0 MiB | 3,501 |
+| 100,000 | 596.0 GiB | 390.6 MiB | 8,127 |
+
+The "call adds" column is the output alone. Memory grows as `S`, and time
+grows as `S * S`. The fused kernel is not a preference here, it is the only
+path: the fallback needs 596 GiB for one row of one layer.
+
+`plan_kernels()` already selects `batch_chunk=1` for this shape, so
+`forward()` runs one 391 MiB sequence at a time.
+
+### The harness
+
+`shape14_harness.py` runs shape 14, and it runs nothing else. It does not
+change `torch_transformer_benchmark.py`, and it does not change
+`BaselineTransformer`. It exists because the graded harness needs the
+baseline for both of its jobs, and the baseline is gone.
+
+It does not call `UserOptimizedTransformer.forward()`, because that
+concatenates all 32 chunk outputs into one 12.2 GiB array. It drives the
+chunk loop itself and reduces each row before it takes the next.
+
+Accuracy comes from the causal property: output row `i` uses input rows
+`0..i` only.
+
+- `--check` gives the *unmodified* baseline the first 1024 tokens, which it
+  can hold, and compares its answer against the first 1024 rows of the full
+  answer. Measured: `max_abs = 2.03e-06`, 0 of 1,048,576 elements failed,
+  against the harness `atol = 0.002`.
+- `--tail` reaches row 99999, which no truncation can reach. It uses
+  `frugal_forward()`, a query-blocked copy of the baseline arithmetic.
+  `--validate` proves that copy equal to `BaselineTransformer` first, over
+  12 shapes, 2 padding settings and 2 query-block counts. **48 of 48 cases
+  PASS, and 42 are bit exact.** The 6 that are not read `max_abs` 9.5e-07 to
+  1.43e-06, against the harness `atol = 0.002`. All 6 are a blocked run, so
+  the difference is the shorter reduction, as expected.
+- `--coverage` shows that shape 14 selects no untested kernel branch. Only
+  the *value* `batch_chunk=1` is new, and shape 6 runs the same loop at
+  `batch_chunk=1024`.
+
+### Measured
+
+`shape14_harness.py --time --rows 32`, at commit 311a420*, one row for each
+of the 32 chunks:
+
+| Item | Value |
+|---|---|
+| per row, median compute | 15.766 s (min 15.681, max 17.700) |
+| full batch, compute | **504.5 s = 8.41 min** |
+| full batch, including the framework copy | 505.6 s |
+| framework boundary | 0.2% of the call |
+| tokens/s | 6,343 |
+| CPU baseline | cannot run |
+| MPS baseline | cannot run |
+| speedup | none. There is no baseline time |
+
+The rate depends on which FLOP count you credit:
+
+| | counted (full `S x S`) | executed (causal triangle) |
+|---|---:|---:|
+| GFLOP | 2,701,971 | 1,391,264 |
+| MLX TFLOP/s | 5.356 | **2.758** |
+| MFU against 4.946 | 108.3% | **55.8%** |
+| against the 4.06 measured ceiling | 131.9% | **67.9%** |
+
+`flops.py` credits the full `S x S`, because that is what the baseline
+calculates, and that is the graded MFU. The fused kernel runs the triangle
+only, which is 51.5% of the counted work here. So the counted MFU passes
+100%, and it is not a measurement error. Read the **executed** column
+against the 82% practical ceiling. Shape 13 shows the same effect at 73%
+attention; shape 14 shows it at 97%.
+
+The framework boundary is 0.2% here, against 3.4% at shape 6
+([machine.md](machine.md)). The copy is the same 391 MiB per chunk, and the
+compute it hides behind is 340x longer.
 
 ## Notes
 

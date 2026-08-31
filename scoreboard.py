@@ -35,8 +35,8 @@ again. A cached reading is marked in every output. Read the warning above
 `CPU_CACHE_USES` before you use it.
 
 Outputs:
-    profiling/scoreboard.json   the newest sweep, overwritten each run
-    profiling/history.jsonl     append-only, one line per sweep
+    profiling/results/scoreboard.json   the newest sweep, overwritten each run
+    profiling/results/history.jsonl     append-only, one line per sweep
     references/scoreboard.md    the tables, ready to read
 
 MFU is reported once, in its own section, and it is marked PROVISIONAL:
@@ -208,6 +208,26 @@ class CaseResult:
         """PROVISIONAL. See `flops.PROVISIONAL_PEAK_TFLOPS`."""
         mine = self.median_ms.get(name)
         return None if mine is None else provisional_mfu(self.flops, mine)
+
+    @property
+    def executed_flops(self) -> int:
+        """
+        The FLOPs the optimized path really runs.
+
+        `self.flops` counts the full `S x S` attention, because that is what
+        `BaselineSelfAttention` computes and it is the graded numerator. A
+        causal path skips the upper triangle, so it executes fewer. The two
+        differ by the attention share of the shape, which runs from 2% at
+        shape 8 to 97% at shape 14. It is NOT a constant factor.
+        """
+        from torch_transformer_benchmark import TransformerConfig
+
+        return model_flops(TransformerConfig(**self.config), causal_aware=True)
+
+    def mfu_executed(self, name: str) -> Optional[float]:
+        """MFU on the work the kernel really runs. Read this one against 82%."""
+        mine = self.median_ms.get(name)
+        return None if mine is None else provisional_mfu(self.executed_flops, mine)
 
 
 def number(value: Optional[float], fmt: str = "{:.3f}") -> str:
@@ -418,7 +438,7 @@ def append_history(results: List[CaseResult], payload: Dict,
     """
     Append one line to the run history.
 
-    `profiling/scoreboard.json` holds the newest run only, and every run
+    `profiling/results/scoreboard.json` holds the newest run only, and every run
     overwrites it. This file never loses a reading.
     """
     entry = {
@@ -530,6 +550,12 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
     add("[../flops.py](../flops.py).")
     add("")
 
+    add("**This table holds shapes 1 to 13.** Shape 14 is not missing by")
+    add("accident: its baseline cannot run, so it has no CPU column and no")
+    add("speedup. It runs under `shape14_harness.py`, and its reading lives in")
+    add("`../profiling/results/shape14.json`. See `OPTIMIZATIONS.md` row 55")
+    add("and [test-shapes.md](test-shapes.md).")
+    add("")
     add("## Speedup against the CPU baseline")
     add("")
     add("| # | Shape | CPU ms | MPS ms | MLX ms | MPS vs CPU | **MLX vs CPU** | MLX vs MPS |")
@@ -600,22 +626,38 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
     add("")
     add("**A causal shape can print more than 82%.** The FLOP model counts the")
     add("full `S x S` attention, because that is what the baseline computes,")
-    add("while the optimized path skips the upper triangle. Shape 13 is")
-    add("credited with 188.98 GFLOP and executes 120.33, so its 91.9% is 58.5%")
-    add("on the work it really runs. The ceiling applies to executed work.")
+    add("while the optimized path skips the upper triangle. So the table")
+    add("carries BOTH: `counted` is the graded number, and `executed` divides")
+    add("by the work the kernel really runs. **Read `executed` against 82%.**")
     add("")
-    add("| # | Shape | GFLOP | FLOP share | MLX MFU | MPS MFU |")
-    add("|---:|---|---:|---:|---:|---:|")
+    worst = min(
+        (r for r in results if r.mfu("mlx") is not None),
+        key=lambda r: r.executed_flops / r.flops, default=None,
+    )
+    if worst is not None:
+        add(f"The gap is not a constant factor. It is widest at shape "
+            f"{worst.case_id}, which executes "
+            f"{worst.executed_flops / worst.flops:.1%} of what it is credited "
+            f"with, so its {worst.mfu('mlx') * 100:.1f}% is "
+            f"{worst.mfu_executed('mlx') * 100:.1f}% on real work. A shape "
+            "whose attention is a small share of the whole barely moves.")
+        add("")
+    add("| # | Shape | GFLOP counted | GFLOP executed | FLOP share | "
+        "MLX MFU counted | **MLX MFU executed** | MPS MFU counted |")
+    add("|---:|---|---:|---:|---:|---:|---:|---:|")
     total_flops = sum(r.flops for r in results if r.speedup("mlx") is not None)
     for result in results:
         config = result.config
         tag = (f"B{config['batch_size']} D{config['d_model']} "
                f"H{config['num_heads']} S{config['seq_len']}")
         share = result.flops / total_flops if total_flops else None
+        executed = result.mfu_executed("mlx")
         add(
             f"| {result.case_id} | {tag} | {result.flops / 1e9:.2f} | "
+            f"{result.executed_flops / 1e9:.2f} | "
             f"{number(share and share * 100, '{:.1f}') + '%'} | "
             f"{number(result.mfu('mlx') and result.mfu('mlx') * 100, '{:.1f}') + '%'} | "
+            f"**{number(executed and executed * 100, '{:.1f}') + '%'}** | "
             f"{number(result.mfu('mps') and result.mfu('mps') * 100, '{:.1f}') + '%'} |"
         )
     add("")
@@ -624,8 +666,19 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
         weighted = sum(
             r.mfu("mlx") * r.flops for r in results if r.mfu("mlx") is not None
         ) / total_flops
-        add(f"- unweighted mean MLX MFU: **{statistics.mean(mfus) * 100:.2f}%**")
-        add(f"- FLOP-weighted mean MLX MFU: **{weighted * 100:.2f}%**")
+        executed_mfus = [
+            r.mfu_executed("mlx") for r in results
+            if r.mfu_executed("mlx") is not None
+        ]
+        weighted_executed = sum(
+            r.mfu_executed("mlx") * r.flops for r in results
+            if r.mfu_executed("mlx") is not None
+        ) / total_flops
+        add(f"- unweighted mean MLX MFU: counted "
+            f"**{statistics.mean(mfus) * 100:.2f}%**, executed "
+            f"**{statistics.mean(executed_mfus) * 100:.2f}%**")
+        add(f"- FLOP-weighted mean MLX MFU: counted **{weighted * 100:.2f}%**, "
+            f"executed **{weighted_executed * 100:.2f}%**")
         add("")
         add("Shape 6 alone is two thirds of the FLOP weight, so a FLOP-weighted")
         add("score is mostly a score on shape 6.")
@@ -667,7 +720,7 @@ def write_markdown(results: List[CaseResult], path: str, dtype_name: str,
         add("## History")
         add("")
         add("Every recorded sweep. The data is in "
-            "[../profiling/history.jsonl](../profiling/history.jsonl).")
+            "[../profiling/results/history.jsonl](../profiling/results/history.jsonl).")
         add("Print it with `.venv/bin/python3 scoreboard.py --show-history`.")
         add("")
         add("| When | Commit | Label | Shapes | Median speedup | Median TFLOP/s |")
@@ -720,14 +773,14 @@ def parse_args() -> argparse.Namespace:
              f"then measure it again. Off by default: a cached reading carries "
              f"the machine state of an earlier sweep",
     )
-    parser.add_argument("--cpu-cache-path", default="profiling/cpu_cache.json")
+    parser.add_argument("--cpu-cache-path", default="profiling/results/cpu_cache.json")
     parser.add_argument(
         "--clear-cpu-cache", action="store_true",
         help="delete the CPU cache file and stop",
     )
-    parser.add_argument("--json", default="profiling/scoreboard.json")
+    parser.add_argument("--json", default="profiling/results/scoreboard.json")
     parser.add_argument("--markdown", default="references/scoreboard.md")
-    parser.add_argument("--history", default="profiling/history.jsonl")
+    parser.add_argument("--history", default="profiling/results/history.jsonl")
     parser.add_argument("--no-history", action="store_true")
     parser.add_argument(
         "--show-history", action="store_true", help="print the recorded runs and stop"

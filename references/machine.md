@@ -58,7 +58,7 @@ Use these to tell a slow kernel from a shape that is simply small.
 |---|---|---|
 | GPU float32, theoretical peak | 4.946 TFLOP/s | `14 x 128 x 2 x 1.380 GHz`, see below |
 | GPU float32 matmul, **measured** | **4.06 TFLOP/s** | `flops.py --peak` |
-| GPU float32 pure FMA loop, measured | 3.92 TFLOP/s | `profiling/alu_peak.py` |
+| GPU float32 pure FMA loop, measured | 3.92 TFLOP/s | `profiling/probes/alu_peak.py` |
 | Memory bandwidth, specification | 150 GB/s | Apple, for the M3 Pro |
 | Memory bandwidth, **measured streaming** | **128 GB/s** | `x * 2.0` at 1 GiB |
 
@@ -148,7 +148,7 @@ change. A per-shape MPS control still can.
 
 **Measure the stage the same way you measured the roof.** The 128 GB/s above
 is a raw reading: it includes one `mx.eval` + `mx.synchronize` round trip.
-`profiling/stage_roofline.py` subtracts that round trip from its stage times
+`profiling/probes/stage_roofline.py` subtracts that round trip from its stage times
 but not from this roof, so its `%mem` column overstates and can pass 100%.
 Compare its `raw` column against this roof, not its `ms` column. Measured on
 the shape 6 `ln1`, which moves 128 MiB: `ms` 0.9477 (141.6 GB/s, prints
@@ -211,7 +211,7 @@ Subtract this floor from any timing of a single operation. At shape 2 the
 whole model is 0.75 ms, which is four round trips, so every stage of that
 shape sits at the floor. Measure it again with:
 
-    .venv/bin/python3 profiling/stage_roofline.py --shapes 2
+    .venv/bin/python3 profiling/probes/stage_roofline.py --shapes 2
 
 ## mx.fast.layer_norm collapses below a row width of 256
 
@@ -291,4 +291,4 @@ loop**. Overlapping it is worse than running it on its own.
 So do not carry a discrete-GPU instinct here. There a transfer crosses PCIe
 while the GPU reads its own VRAM, and double buffering is free. On this
 machine both sides use the one controller. See OPTIMIZATIONS.md row 48 and
-`profiling/pipeline_probe.py`.
+`profiling/probes/pipeline_probe.py`.

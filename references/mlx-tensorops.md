@@ -19,6 +19,16 @@ the new measurement here.
 | always | one fused `[D, 3D]` QKV matmul |
 | activation over 64 MiB | chunk the batch, full depth per chunk |
 
+## The dispatch, as a diagram
+
+[figures/kernel-dispatch.png](figures/kernel-dispatch.png) draws the whole
+`plan_kernels()` tree: the three stages, the kernel each one takes, and the
+condition that selects it.
+[figures/kernel-dispatch-shape6.png](figures/kernel-dispatch-shape6.png)
+resolves that tree for shape 6. Each file has a `-dark` variant for a dark
+page. This section and `plan_kernels()` are the source of truth; the diagram
+follows them.
+
 ## 0. MLX has two SDPA kernels, and the shape picks one
 
 **This is the most useful fact in this file. Read it before section 1.**
@@ -49,7 +59,7 @@ with:
 
 Reproduce with:
 
-    .venv/bin/python3 profiling/sdpa_dispatch.py --mode path --max-head-dim 288
+    .venv/bin/python3 profiling/probes/sdpa_dispatch.py --mode path --max-head-dim 288
 
 Peak GPU memory at B=8, H=8, S=1024, where the score matrix is 256 MiB. The
 column is `peak - base`, in MiB:
@@ -219,7 +229,7 @@ the kernel spends its time on addressing, not on arithmetic.
 cost is inside the number, so this is a lower bound: a model that folds the
 pad into the QKV weight pays less.
 
-    .venv/bin/python3 profiling/sdpa_dispatch.py --mode pad \
+    .venv/bin/python3 profiling/probes/sdpa_dispatch.py --mode pad \
         --batch 8 --heads 8 --seq 1024 --repeats 30 --check
 
 **Result 1: always target the SMALLEST member of the set at or above

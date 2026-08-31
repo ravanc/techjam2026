@@ -38,7 +38,7 @@ Three questions, in this order:
 3. Which stage runs at the memory roof? A stage at the roof cannot get a
    better kernel. It can only move fewer bytes.
 
-Tool: `.venv/bin/python3 profiling/stage_roofline.py --shapes 1,6,8,13`
+Tool: `.venv/bin/python3 profiling/probes/stage_roofline.py --shapes 1,6,8,13`
 
 ### Layer 2 — per kernel
 
@@ -46,7 +46,7 @@ Take the kernel that layer 1 produced. Tune it: the tile, the block shape,
 the epilogue. Row 38 measured this layer on the steel attention kernel and
 found nothing, so this layer is second, never first.
 
-Tool: `profiling/profile_benchmark.py --mode gputrace`, then Xcode.
+Tool: `profiling/tools/profile_benchmark.py --mode gputrace`, then Xcode.
 
 ## The gate
 
@@ -91,7 +91,7 @@ that fail. This repository already does that.
 | The status of every optimization | the source of truth table in `OPTIMIZATIONS.md` |
 | The measurement that decided it | the detail section under the same row number |
 | A machine fact, measured once | `references/` |
-| Every sweep ever run | `profiling/history.jsonl` |
+| Every sweep ever run | `profiling/results/history.jsonl` |
 | This loop, and what it did | the run log at the end of this file |
 
 A REVERTED row is the valuable one. It stops the loop from doing the same
@@ -184,7 +184,7 @@ statistics are a reduction over the whole row, so one A tile must cover it:
 **The kill test first.** This is the cheapest measurement that can end the
 row, so it ran before any kernel got written.
 
-    .venv/bin/python3 profiling/tile_probe.py --row 43
+    .venv/bin/python3 profiling/probes/tile_probe.py --row 43
 
 **The reading.** The 32 KiB threadgroup caps the tile at `bm + bn <= 62` at
 `bk = 128`, against `bm32 bn64` today. Every tile that compiles is bit exact
@@ -217,7 +217,7 @@ speed.
 needs a whole `hidden` row, so the first GEMM's `bn` must cover all of
 `ffn_dim`. What does `bn = 128` cost, and does `hidden` fit beside As and Bs?
 
-    .venv/bin/python3 profiling/tile_probe.py --row 44
+    .venv/bin/python3 profiling/probes/tile_probe.py --row 44
 
 **The reading.** `ffn_in + gelu` at `bm32 bn64` is 1.680 ms. At `bm32 bn128`
 it is 1.899 ms, **0.884x**, `max_abs` 4.77e-07. The threadgroup holds
@@ -255,7 +255,7 @@ Checked directly. The shape 6 `ln1` moves 128 MiB:
 The `raw` column agrees with the reference and with a standalone reading.
 So `%mem` is a rank, not a fraction of the roof, and the same bias inflates
 `%comp` (which is why shape 8 prints 100.4% on a GEMM). Both
-`profiling/stage_roofline.py` and `references/machine.md` now say so.
+`profiling/probes/stage_roofline.py` and `references/machine.md` now say so.
 
 This changes nothing about row 43: `fast_layernorm` really does run at copy
 speed, so the conclusion "only fewer bytes can win `ln1`" still holds.
@@ -272,7 +272,7 @@ does that cancellation cost?
 
 **The kill test.** Arithmetic only. It writes no Metal, so it cost minutes.
 
-    .venv/bin/python3 profiling/ln_absorb_probe.py --shape 6
+    .venv/bin/python3 profiling/probes/ln_absorb_probe.py --shape 6
 
 It takes the residual stream from a real forward, then computes one
 projection three ways: float64 as the reference, float32 as the model runs it
@@ -443,7 +443,7 @@ trip does pay for part of it. So the screen was directionally right about
 the cost and could not see the occupancy term. A screen bounds one effect.
 It does not predict a kernel.
 
-**Where the code went.** `profiling/chain_probe.py`, not the model. It is a
+**Where the code went.** `profiling/probes/chain_probe.py`, not the model. It is a
 working kernel that loses, so it belongs with the measurement, not in
 `steel_gemm.py`. `store_result_tgp` stays in the mma patch, marked as used
 by the probe alone.
@@ -488,9 +488,9 @@ facts and no regression risk:
 
 | Row | Was | Now | Decided by |
 |---:|---|---|---|
-| 43 route 1 | OPEN | **REVERTED**, +2.243 ms | `profiling/tile_probe.py --row 43` |
+| 43 route 1 | OPEN | **REVERTED**, +2.243 ms | `profiling/probes/tile_probe.py --row 43` |
 | 46 (was 43 route 2) | not stated | **KEPT, 1.060x FLOP-weighted** | the four-gate sweep |
-| 44 | OPEN, estimated from a memory floor | **OPEN, estimate corrected** to 5.0% of shape 6. Tile is affordable | `profiling/tile_probe.py --row 44` |
+| 44 | OPEN, estimated from a memory floor | **OPEN, estimate corrected** to 5.0% of shape 6. Tile is affordable | `profiling/probes/tile_probe.py --row 44` |
 | 37 | OPEN | **KEPT, shape 8 1.042x.** Turn 3 wrongly called it subsumed; turn 4 corrected that and found a cheaper fix; turn 5 built the cheap fix and it needed no new kernel | the per-shape control |
 
 Plus one reference correction: `stage_roofline.py` `%mem` overstates, and
@@ -511,7 +511,7 @@ The queue was empty, so the loop ran the first of the two moves it left
 itself: re-measure the stage roofline, because rows 46 and 37 changed the
 block and layer 1 of this loop reads that table.
 
-    .venv/bin/python3 profiling/stage_roofline.py --shapes 1,6,8,13
+    .venv/bin/python3 profiling/probes/stage_roofline.py --shapes 1,6,8,13
 
 **The tool crashed first, and the crash is itself a finding.** Shape 8 raised
 `TypeError` in `do_norm()`. Row 37 changed `plan_kernels()` so that
@@ -595,7 +595,7 @@ estimate used the floor-subtracted `ms` column and the stage is really
 
 **Two screens went first, and both were cheap.**
 
-1. `profiling/ln_tiled_stats_probe.py`, the accuracy screen. A tile cannot
+1. `profiling/probes/ln_tiled_stats_probe.py`, the accuracy screen. A tile cannot
    centre against a mean it does not have, so the epilogue must use the
    uncentred variance, which `fast_layernorm` refuses for a whole row. The
    screen measured the residual drift of this model at **0.12 to 0.33**,
@@ -653,7 +653,7 @@ appendix shape.
 
 **There is no queue left with a measured prize.** Every stage of the block is
 at a roof, and row 48 closed the one region outside it. The next turn has to
-find a NEW prize, not work an old one: run `profiling/stage_roofline.py`
+find a NEW prize, not work an old one: run `profiling/probes/stage_roofline.py`
 again, and read every row EXCEPT `ln1 stats` and `ln2 stats`, which row 47
 made stale.
 

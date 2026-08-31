@@ -342,7 +342,7 @@ MIN_BLOCK_SEQ = 64
 # fallback. Measured over head_dim 1..288, by peak GPU memory. The set does
 # not move with the mask kind, the dtype, the sequence length or B * H.
 #
-#     .venv/bin/python3 profiling/sdpa_dispatch.py --mode path --max-head-dim 288
+#     .venv/bin/python3 profiling/probes/sdpa_dispatch.py --mode path --max-head-dim 288
 #
 # MLX also ships `bd192` and `bd256` and never calls them. That costs shape
 # 8 (head_dim = 256) the fused path, and Python cannot reach around it.

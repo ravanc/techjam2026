@@ -8,8 +8,8 @@ For the setup steps and the platform problems, read `README.md`.
 ### 1. The timeline — find the slow model
 
 ```
-./profiling/trace.sh
-.venv/bin/python3 profiling/summarize.py profiling/traces/benchmark.trace
+./profiling/tools/trace.sh
+.venv/bin/python3 profiling/tools/summarize.py profiling/traces/benchmark.trace
 ```
 
 The summary prints the median, the mean, the minimum, and the maximum time
@@ -27,7 +27,7 @@ Use this tool first. It shows you where to look.
 ### 2. The kernel view — find the slow GPU kernel
 
 ```
-.venv/bin/python3 profiling/profile_benchmark.py --mode gputrace --iterations 3
+.venv/bin/python3 profiling/tools/profile_benchmark.py --mode gputrace --iterations 3
 open profiling/traces/optimized_mlx.gputrace
 ```
 
@@ -37,7 +37,7 @@ of each instruction. It tells you if a kernel waits for memory or for math.
 ### 3. The stage roofline — find the slow stage, and its limit
 
 ```
-.venv/bin/python3 profiling/stage_roofline.py --shapes 1,6,8,13
+.venv/bin/python3 profiling/probes/stage_roofline.py --shapes 1,6,8,13
 ```
 
 It splits one transformer block into eleven stages, times each one alone,
@@ -137,8 +137,8 @@ get faster from a kernel that moves fewer bytes.
 ### 4. The GPU gap report — find out if the GPU waits
 
 ```
-./profiling/gpu_timeline.sh --case 6 --iterations 5
-.venv/bin/python3 profiling/gpu_timeline.py report \
+./profiling/tools/gpu_timeline.sh --case 6 --iterations 5
+.venv/bin/python3 profiling/tools/gpu_timeline.py report \
     profiling/traces/gpu_timeline.trace
 ```
 
@@ -199,7 +199,7 @@ Measured: row 47 read **0.922x** at shape 12 from two sweeps, and
 own MPS control moved 0.955x on that sweep pair, and MPS runs none of the
 code under test.
 
-    .venv/bin/python3 profiling/plan_ab.py --cases 12
+    .venv/bin/python3 profiling/probes/plan_ab.py --cases 12
 
 `plan_ab.py` builds the same model twice in one process, sets
 `plan_override` on each, and alternates the order each round. Use it, or read
@@ -238,7 +238,7 @@ measurements for a GPU.
 CPU cache misses are available. They come from a different template:
 
 ```
-TEMPLATE="CPU Counters" ./profiling/trace.sh
+TEMPLATE="CPU Counters" ./profiling/tools/trace.sh
 ```
 
 Use this template only to study the Python overhead and the numpy overhead.

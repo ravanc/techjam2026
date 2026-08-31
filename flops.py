@@ -115,7 +115,7 @@ def model_flops(config: TransformerConfig, causal_aware: bool = False) -> int:
 #     ALUs per core >= 4.06e12 / (14 x 2 x 1.380e9) = 105.1
 #
 # 64 is therefore impossible and 128 is the next width an Apple GPU core has.
-# A pure FMA loop agrees: `profiling/alu_peak.py` reaches 3.92 TFLOP/s, which
+# A pure FMA loop agrees: `profiling/probes/alu_peak.py` reaches 3.92 TFLOP/s, which
 # is 1.09 GHz at 128 ALUs, and 1.09 GHz sits on a real DVFS state.
 #
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def model_flops(config: TransformerConfig, causal_aware: bool = False) -> int:
 #
 # | what | rate | implied clock at 128 ALUs |
 # |---|---:|---:|
-# | pure FMA loop, sustained (`profiling/alu_peak.py`) | 3.92 TFLOP/s | 1.09 GHz |
+# | pure FMA loop, sustained (`profiling/probes/alu_peak.py`) | 3.92 TFLOP/s | 1.09 GHz |
 # | float32 matmul (`flops.py --peak`) | 4.06 TFLOP/s | 1.13 GHz |
 #
 # So an MFU against `PEAK_TFLOPS` carries an 18% penalty that no kernel can

@@ -120,7 +120,7 @@ Rules:
 ## The CPU cache
 
 `BaselineTransformer` never changes, so its time only moves with the machine.
-`--cpu-cache` stores one entry for each shape in `profiling/cpu_cache.json`.
+`--cpu-cache` stores one entry for each shape in `profiling/results/cpu_cache.json`.
 The file is machine-local, and git ignores it.
 
 - Each entry counts its uses. It serves five sweeps. The sixth sweep measures
@@ -160,9 +160,17 @@ from `system_profiler`, the 1380 MHz top state from the GPU DVFS table
 at 105 by the measured matmul rate. An earlier version used 1.398 GHz, which
 was asserted from memory and is wrong by 1.3%.
 
+`references/scoreboard.md` reports MFU in two columns. **counted** divides by
+`model_flops()`, which counts the full `S x S` attention because that is what
+the baseline computes; it is the graded number. **executed** divides by
+`model_flops(causal_aware=True)`, the work a causal kernel really runs. The
+two differ by the attention share of the shape, from 98% at shape 8 to 51% at
+shape 14, so it is not a constant factor. Quote **counted** as the score and
+**executed** when you judge a kernel.
+
 **Read every MFU against 82%, not against 100%.** The GPU does not hold its
 top DVFS state. A saturating FMA loop sustains 3.92 TFLOP/s
-(`profiling/alu_peak.py`) and a plain matmul reaches 4.06 TFLOP/s
+(`profiling/probes/alu_peak.py`) and a plain matmul reaches 4.06 TFLOP/s
 (`flops.py --peak`), and both imply a clock near 1.1 GHz. No kernel can close
 that gap, so 4.06 TFLOP/s is the ceiling a kernel competes against. Give the
 speedup and the achieved TFLOP/s first: they are stopwatch readings.
@@ -171,13 +179,13 @@ speedup and the achieved TFLOP/s first: they are stopwatch readings.
 full S x S attention, not the causal triangle. Do not change it without a
 note in the file.
 
-Write the result of a full sweep to `profiling/scoreboard.json` and to the
+Write the result of a full sweep to `profiling/results/scoreboard.json` and to the
 table in `references/scoreboard.md`.
 
 # Keep every reading
 
-`profiling/scoreboard.json` holds the newest sweep only, and every run
-overwrites it. `profiling/history.jsonl` never loses a reading: one line for
+`profiling/results/scoreboard.json` holds the newest sweep only, and every run
+overwrites it. `profiling/results/history.jsonl` never loses a reading: one line for
 each sweep, with the commit that produced it.
 
     .venv/bin/python3 scoreboard.py --label "what changed"   # appends

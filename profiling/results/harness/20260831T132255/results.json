@@ -1,0 +1,779 @@
+{
+  "timestamp": "2026-08-31T15:08:16",
+  "harness": "torch_transformer_benchmark.py",
+  "git": {
+    "commit": "311a420",
+    "branch": "master",
+    "dirty": true
+  },
+  "device": "cpu",
+  "dtype": "float32",
+  "torch_version": "2.13.0",
+  "elapsed_seconds": 6320.867646932602,
+  "summary": {
+    "cases_run": 13,
+    "cases_scored": 13,
+    "cases_passed": 13,
+    "median_speedup": 11.588,
+    "max_speedup": 49.28,
+    "max_speedup_case": 13,
+    "min_speedup": 2.368,
+    "min_speedup_case": 2
+  },
+  "cases": [
+    {
+      "case_id": 1,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 17.434610843658447,
+      "log": "case_01.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.90735e-06,
+        "max_rel": 1.21053,
+        "failed_elements": 0,
+        "total_elements": 5242880
+      },
+      "baseline": {
+        "median_ms": 45.9754,
+        "mean_ms": 47.9351,
+        "p90_ms": 53.665,
+        "min_ms": 40.4553,
+        "tokens_per_second": 178182.26
+      },
+      "optimized": {
+        "median_ms": 3.2652,
+        "mean_ms": 3.3923,
+        "p90_ms": 3.4278,
+        "min_ms": 3.1624,
+        "tokens_per_second": 2508875.39
+      },
+      "speedup": 14.08
+    },
+    {
+      "case_id": 2,
+      "shape": {
+        "batch_size": 1,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "1",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 1.4399888515472412,
+      "log": "case_02.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.3113e-06,
+        "max_rel": 0.0195057,
+        "failed_elements": 0,
+        "total_elements": 81920
+      },
+      "baseline": {
+        "median_ms": 1.4456,
+        "mean_ms": 1.4597,
+        "p90_ms": 1.514,
+        "min_ms": 1.2765,
+        "tokens_per_second": 88546.82
+      },
+      "optimized": {
+        "median_ms": 0.6104,
+        "mean_ms": 0.765,
+        "p90_ms": 1.2238,
+        "min_ms": 0.5343,
+        "tokens_per_second": 209707.15
+      },
+      "speedup": 2.368
+    },
+    {
+      "case_id": 3,
+      "shape": {
+        "batch_size": 4,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "4",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 2.3123161792755127,
+      "log": "case_03.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.43051e-06,
+        "max_rel": 0.0574957,
+        "failed_elements": 0,
+        "total_elements": 327680
+      },
+      "baseline": {
+        "median_ms": 4.0834,
+        "mean_ms": 4.1277,
+        "p90_ms": 4.3892,
+        "min_ms": 3.5532,
+        "tokens_per_second": 125385.83
+      },
+      "optimized": {
+        "median_ms": 0.6723,
+        "mean_ms": 0.7725,
+        "p90_ms": 1.054,
+        "min_ms": 0.5777,
+        "tokens_per_second": 761597.63
+      },
+      "speedup": 6.074
+    },
+    {
+      "case_id": 4,
+      "shape": {
+        "batch_size": 16,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "16",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 5.548364162445068,
+      "log": "case_04.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.43051e-06,
+        "max_rel": 0.18806,
+        "failed_elements": 0,
+        "total_elements": 1310720
+      },
+      "baseline": {
+        "median_ms": 13.9391,
+        "mean_ms": 13.5346,
+        "p90_ms": 15.2316,
+        "min_ms": 11.0851,
+        "tokens_per_second": 146925.01
+      },
+      "optimized": {
+        "median_ms": 1.2029,
+        "mean_ms": 1.2932,
+        "p90_ms": 1.2968,
+        "min_ms": 1.1047,
+        "tokens_per_second": 1702616.57
+      },
+      "speedup": 11.588
+    },
+    {
+      "case_id": 5,
+      "shape": {
+        "batch_size": 128,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "128",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 37.261225938797,
+      "log": "case_05.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 2.38419e-06,
+        "max_rel": 2.5625,
+        "failed_elements": 0,
+        "total_elements": 10485760
+      },
+      "baseline": {
+        "median_ms": 102.2755,
+        "mean_ms": 105.8921,
+        "p90_ms": 118.6802,
+        "min_ms": 95.9059,
+        "tokens_per_second": 160194.8
+      },
+      "optimized": {
+        "median_ms": 5.8422,
+        "mean_ms": 5.9201,
+        "p90_ms": 5.917,
+        "min_ms": 5.7444,
+        "tokens_per_second": 2804428.99
+      },
+      "speedup": 17.506
+    },
+    {
+      "case_id": 6,
+      "shape": {
+        "batch_size": 10000,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "10000",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 5356.841607809067,
+      "log": "case_06.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 2.38419e-06,
+        "max_rel": 336566.0,
+        "failed_elements": 0,
+        "total_elements": 819200000
+      },
+      "baseline": {
+        "median_ms": 15419.716,
+        "mean_ms": 15655.073,
+        "p90_ms": 17843.5995,
+        "min_ms": 11728.6653,
+        "tokens_per_second": 83010.61
+      },
+      "optimized": {
+        "median_ms": 436.8107,
+        "mean_ms": 544.122,
+        "p90_ms": 446.1845,
+        "min_ms": 431.6391,
+        "tokens_per_second": 2930330.95
+      },
+      "speedup": 35.301
+    },
+    {
+      "case_id": 7,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 32,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 32
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "32",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "32",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 9.558748245239258,
+      "log": "case_07.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.66893e-06,
+        "max_rel": 0.121212,
+        "failed_elements": 0,
+        "total_elements": 1310720
+      },
+      "baseline": {
+        "median_ms": 23.6896,
+        "mean_ms": 24.0226,
+        "p90_ms": 24.5273,
+        "min_ms": 22.9181,
+        "tokens_per_second": 345806.0
+      },
+      "optimized": {
+        "median_ms": 1.0029,
+        "mean_ms": 1.098,
+        "p90_ms": 1.0566,
+        "min_ms": 0.9152,
+        "tokens_per_second": 8168515.52
+      },
+      "speedup": 23.622
+    },
+    {
+      "case_id": 8,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 1024,
+        "num_heads": 4,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 1024
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "1024",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "1024",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 191.0557680130005,
+      "log": "case_08.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 3.57628e-06,
+        "max_rel": 3.18987,
+        "failed_elements": 0,
+        "total_elements": 41943040
+      },
+      "baseline": {
+        "median_ms": 461.1526,
+        "mean_ms": 467.2073,
+        "p90_ms": 482.9953,
+        "min_ms": 456.6132,
+        "tokens_per_second": 17764.18
+      },
+      "optimized": {
+        "median_ms": 115.5255,
+        "mean_ms": 115.6625,
+        "p90_ms": 115.8707,
+        "min_ms": 115.1919,
+        "tokens_per_second": 70910.75
+      },
+      "speedup": 3.992
+    },
+    {
+      "case_id": 9,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 1,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "1",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 10.813606262207031,
+      "log": "case_09.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.66893e-06,
+        "max_rel": 0.255263,
+        "failed_elements": 0,
+        "total_elements": 5242880
+      },
+      "baseline": {
+        "median_ms": 26.3907,
+        "mean_ms": 27.3115,
+        "p90_ms": 31.9254,
+        "min_ms": 24.5829,
+        "tokens_per_second": 310412.78
+      },
+      "optimized": {
+        "median_ms": 3.3803,
+        "mean_ms": 3.4461,
+        "p90_ms": 3.4241,
+        "min_ms": 3.2512,
+        "tokens_per_second": 2423474.69
+      },
+      "speedup": 7.807
+    },
+    {
+      "case_id": 10,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 2,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "2",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 14.526921033859253,
+      "log": "case_10.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.90735e-06,
+        "max_rel": 1.0119,
+        "failed_elements": 0,
+        "total_elements": 5242880
+      },
+      "baseline": {
+        "median_ms": 37.3346,
+        "mean_ms": 39.152,
+        "p90_ms": 44.6227,
+        "min_ms": 33.6071,
+        "tokens_per_second": 219421.1
+      },
+      "optimized": {
+        "median_ms": 3.2754,
+        "mean_ms": 3.3646,
+        "p90_ms": 3.3127,
+        "min_ms": 3.2342,
+        "tokens_per_second": 2501087.66
+      },
+      "speedup": 11.399
+    },
+    {
+      "case_id": 11,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 16,
+        "seq_len": 128,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "128",
+        "--d-model",
+        "128",
+        "--heads",
+        "16",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 43.200780153274536,
+      "log": "case_11.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.66893e-06,
+        "max_rel": 4.25,
+        "failed_elements": 0,
+        "total_elements": 5242880
+      },
+      "baseline": {
+        "median_ms": 121.8538,
+        "mean_ms": 127.3587,
+        "p90_ms": 143.5961,
+        "min_ms": 117.4684,
+        "tokens_per_second": 67228.1
+      },
+      "optimized": {
+        "median_ms": 3.2514,
+        "mean_ms": 3.3889,
+        "p90_ms": 3.4964,
+        "min_ms": 3.1935,
+        "tokens_per_second": 2519549.42
+      },
+      "speedup": 37.478
+    },
+    {
+      "case_id": 12,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 32,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "32",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 3.601285934448242,
+      "log": "case_12.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.54972e-06,
+        "max_rel": 0.22973,
+        "failed_elements": 0,
+        "total_elements": 1310720
+      },
+      "baseline": {
+        "median_ms": 7.5305,
+        "mean_ms": 7.5434,
+        "p90_ms": 7.7573,
+        "min_ms": 7.18,
+        "tokens_per_second": 271960.69
+      },
+      "optimized": {
+        "median_ms": 1.1551,
+        "mean_ms": 1.2589,
+        "p90_ms": 1.1912,
+        "min_ms": 1.09,
+        "tokens_per_second": 1773031.23
+      },
+      "speedup": 6.519
+    },
+    {
+      "case_id": 13,
+      "shape": {
+        "batch_size": 64,
+        "d_model": 128,
+        "num_heads": 4,
+        "seq_len": 1024,
+        "num_layers": 4,
+        "causal": true,
+        "ffn_dim": 128
+      },
+      "command": [
+        "/Users/ravanchan/Desktop/code/techjam/.venv/bin/python3",
+        "/Users/ravanchan/Desktop/code/techjam/torch_transformer_benchmark.py",
+        "--batch-size",
+        "64",
+        "--seq-len",
+        "1024",
+        "--d-model",
+        "128",
+        "--heads",
+        "4",
+        "--ffn-dim",
+        "128",
+        "--layers",
+        "4",
+        "--device",
+        "cpu",
+        "--dtype",
+        "float32",
+        "--causal"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 627.2153680324554,
+      "log": "case_13.log",
+      "accuracy": {
+        "passed": true,
+        "max_abs": 1.90735e-06,
+        "max_rel": 3.8,
+        "failed_elements": 0,
+        "total_elements": 41943040
+      },
+      "baseline": {
+        "median_ms": 1845.8785,
+        "mean_ms": 1883.2372,
+        "p90_ms": 2010.0538,
+        "min_ms": 1777.0804,
+        "tokens_per_second": 35503.96
+      },
+      "optimized": {
+        "median_ms": 37.457,
+        "mean_ms": 38.1988,
+        "p90_ms": 37.7146,
+        "min_ms": 37.2765,
+        "tokens_per_second": 1749631.95
+      },
+      "speedup": 49.28
+    }
+  ]
+}

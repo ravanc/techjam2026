@@ -5,7 +5,20 @@ __pycache__/
 
 # Instruments / Metal captures - hundreds of MB each
 profiling/traces/
-profiling/*.dylib
+profiling/tools/*.dylib
 
 # scoreboard CPU cache - machine-local measurements
-profiling/cpu_cache.json
+profiling/results/cpu_cache.json
+
+# Generated charts. `profiling/tools/plot_runtime.py` rebuilds them from a
+# sweep, so the repository keeps the SVG only. A PNG and a PDF of the same
+# chart are exports, and they cost about 200 KB each.
+profiling/results/harness/*.png
+profiling/results/harness/*.pdf
+
+# The raw stdout of one harness sweep. `results.json` and `results.md` hold
+# the parsed numbers, and git tracks those.
+profiling/results/harness/*/case_*.log
+
+# Diagrams under references/figures/ are NOT ignored. No script can rebuild
+# them: see references/figures/README.md.

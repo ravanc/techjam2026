@@ -111,7 +111,7 @@ _MMA_ANCHOR = """  /* Apply epilogue */
 # trip. Apple's `store_result` writes to device only.
 #
 # **Nothing in the model uses this.** It exists for row 44, which chained
-# `ffn_in` and `ffn_out` and LOST. `profiling/chain_probe.py` holds that
+# `ffn_in` and `ffn_out` and LOST. `profiling/probes/chain_probe.py` holds that
 # kernel and its measurement. The method stays here because the patch belongs
 # beside the other one, and because it is the piece a future attempt needs.
 # See OPTIMIZATIONS.md row 44. This mirrors it exactly: the same
@@ -183,7 +183,7 @@ _LN_EPILOGUE = """
 #
 # `fast_layernorm` refuses that uncentred form for a whole row, because it
 # cancels when the row mean is large against the standard deviation.
-# `profiling/ln_tiled_stats_probe.py` measures the drift of this model and it
+# `profiling/probes/ln_tiled_stats_probe.py` measures the drift of this model and it
 # is 0.12 to 0.33, which is far below the cancellation regime. The probe
 # gives the same projection error as today on shapes 6, 8 and 13.
 #
@@ -284,7 +284,7 @@ _ROW_STATS_EPILOGUE = """
 # fragment row ends with the total. No leader lane and no broadcast.
 #
 # The variance is the UNCENTRED form, as row 47 uses.
-# `profiling/ln_tiled_stats_probe.py` measures that this model stays far
+# `profiling/probes/ln_tiled_stats_probe.py` measures that this model stays far
 # below the cancellation regime.
 #
 # It reuses the pointer slots of rows 46 and 47, which are always free here:
@@ -731,7 +731,7 @@ def fits_threadgroup(bm: int, bn: int, bk: int, transpose_a: bool,
 #
 # ROW 54 RE-SWEPT THIS ORDER WITH THE ROW 46 AND ROW 47 EPILOGUES ON, and it
 # holds. 129 tiles on each of the four shape 6 stages, each paired against the
-# tile in use and alternated every repeat (`profiling/tile_resweep.py`). The
+# tile in use and alternated every repeat (`profiling/probes/tile_resweep.py`). The
 # best candidate is 0.997x on `qkv proj` and 1.007x on `ffn_in`, and the null
 # control moves 1.5%. Do not re-sweep it again without a new epilogue.
 _TILES = [
@@ -776,7 +776,7 @@ def choose_tile(m: int, n: int, k: int, transpose_a: bool = False,
 # owns it and the two `simd_shuffle_xor` steps reduce all of it.
 #
 # `bm32 wm4` is the best of the six that build, at every size measured
-# (`profiling/final_ln_probe.py`). `wm2` does not compile at `bn = 128`: 64
+# (`profiling/probes/final_ln_probe.py`). `wm2` does not compile at `bn = 128`: 64
 # threads cannot load that threadgroup tile.
 _FINAL_LN_TILES = [(32, 16, 4), (64, 16, 4)]
 
@@ -1176,7 +1176,7 @@ def steel_addmm(
 # whole activation: 4 MiB against 65 MiB at the shape 6 chunk.
 #
 # The variance is the UNCENTRED form, because a tile never sees a whole row.
-# `profiling/ln_tiled_stats_probe.py` measures that this model never enters
+# `profiling/probes/ln_tiled_stats_probe.py` measures that this model never enters
 # the cancellation regime.
 _REDUCE_SOURCE = """
     constexpr uint P = {planes};

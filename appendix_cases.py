@@ -16,9 +16,13 @@ Select a subset with `--cases`, and add `--run` for the real benchmark:
 
     .venv/bin/python3 appendix_cases.py --cases 1,7-9 --run
 
-Shape 14 (B=32, D=1024, H=16, S=100000, L=2) is disabled. Its input alone is
-12.2 GiB in float32, and `BaselineSelfAttention` materializes a B x H x S x S
-score matrix, which is 18.6 TiB at that shape.
+Shape 14 (B=32, D=1024, H=16, S=100000, L=2) is disabled HERE, because this
+file compares against `BaselineTransformer` and that model cannot run the
+shape: its input alone is 12.2 GiB in float32, and `BaselineSelfAttention`
+materializes a B x H x S x S score matrix, which is 18.6 TiB.
+
+The MLX path CAN run shape 14. `shape14_harness.py` runs it, on its own, with
+its own accuracy checks. Do not enable shape 14 here.
 """
 
 from __future__ import annotations
