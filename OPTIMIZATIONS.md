@@ -73,6 +73,12 @@ Status:
 
 | 51 | Refuse a steel tile whose block loader has inexact thread geometry | **KEPT** (a bug fix) | `steel_gemm.py` `_loader_ok()` and `loader_geometry_ok()` L689; applied in `choose_tile()`, `choose_final_ln_tile()` and `steel_addmm()` | every steel GEMM. It changes NO appendix plan: all 13 are identical before and after | found while building row 50. MLX's `BlockLoader` derives `n_reads`, `TCOLS` and `TROWS` by TRUNCATING integer division with no guard, so a tile it never dispatches gives a **silently wrong answer**. Measured on a plain GEMM with no epilogue (M=1024 K=128, `bm32 bk16`, 128 threads): `BN` 32, 64 and 128 give `max_abs` **0.00e+00**, while `BN` 48 and 96 give **5.2e+00**, and `BN` 160 does not compile (`TCOLS` is 0). At `BN = 96`: `n_reads = 12`, `TCOLS = 16 / 12 = 1`, `TROWS = 128`, so 128 threads load 128 rows of a 96 row tile. The predicate reproduces the measured set exactly: it admits {8, 16, 32, 64, 128} and rejects 24, 40, 48, 56, 72, 80, 88, 96, 104, 112, 120 and 160. It was latent before row 50, because `_TILES` holds only `bn` 32 and 64, and all four tiles pass. 84/84 configurations over 7 `d_model`, 3 `seq_len`, 2 batch and both causal settings now PASS |
 
+| 52 | Close the kernel launch gaps with a persistent kernel | **RULED OUT** | `profiling/gpu_timeline.py`, not in the model | — | **read off the Metal timeline, not from a slope fit.** GPU idle BETWEEN the kernels of a shape 6 forward is **1.05%** of the call. 9 or 10 gaps of about 0.45 ms hold all of it, and shape 6 runs exactly 10 chunks, so those gaps are the `mx.eval` at the chunk boundary, not a launch bubble. Every other gap is under 0.05 ms, and the 90 of them together hold **0.269 ms of a 462 ms window, which is 0.06%**. That 0.06% is the whole prize of a persistent kernel. The idle that IS large sits before the first kernel, and it is the `_to_mlx` input copy that row 48 already ruled out |
+
+| 53 | Fuse the attention and the out projection into one kernel | **RULED OUT** | `profiling/attn_out_budget.py`, not in the model | — | stopped on the budget, before any kernel was written. The out projection mixes every head, so one threadgroup must own `bq` query rows over the FULL `d_model`. At shape 6 that is **25.50 KiB of the 32 KiB budget with aliasing, and 29.62 KiB without**, against the **9.00 KiB** the steel attention kernel uses today. Row 44 measured that exact band on this machine: 24.0 KiB gave 0.996x and 29.0 KiB gave 0.896x. Same prize as row 44 too, and the same size: a 128 MiB round trip at the shape 6 chunk. **Shape 8 cannot hold it at all** (197 KiB), and nor can shapes 9 and 10 |
+
+| 54 | Re-sweep the steel GEMM tile, with the row 46 and row 47 epilogues on | **REVERTED** | `profiling/tile_resweep.py`, `_TILES` unchanged | — | 129 tiles on each of the four shape 6 GEMM stages, each one paired against today's tile and alternated every repeat. **No tile wins.** `qkv proj` and `ffn_in` already run their best tile: the top candidate over 129 is 0.997x and 1.007x. The two row 47 stages prefer `32x64x32x2x2`, but `out proj` reads 1.025x, 1.018x and 1.012x and `ffn_out` reads 1.030x, 0.979x and 1.006x, while the null control (today against today) moves 0.976x to 1.009x. **The `bn = 128` hypothesis is refuted**: a `bn128` tile never reached the top of any stage. The largest reproducible effect is `32x64x16x1x4` on `ffn_in` at 1.007x, 1.008x and 1.008x, which is **0.07% FLOP-weighted** |
+
 Line numbers are in `torch_transformer_benchmark.py`.
 
 ## Test conditions
@@ -3383,3 +3389,271 @@ off gives 1.19e-06.
 84 configurations, over `d_model` in {32, 48, 64, 96, 128, 192, 256},
 `seq_len` in {32, 96, 128}, batch in {8, 40} and both causal settings, against
 `BaselineTransformer`. All 84 PASS, `max_abs` 9.54e-07 to 1.43e-06.
+
+## 52. Close the kernel launch gaps with a persistent kernel — RULED OUT
+
+Every earlier estimate of GPU idle came from arithmetic. Row 48 subtracted the
+`_to_mlx` copy and the `mx.concatenate` from the wall time and called the
+remainder the boundary. A residual like that carries the error of every term
+it subtracts, so it bounds the idle but it does not locate it.
+
+This row reads the gaps off the Metal timeline instead.
+
+### The tool
+
+`profiling/gpu_timeline.py` records a `Metal System Trace` and reads it with
+`xctrace export`, so no Xcode window is needed.
+
+    ./profiling/gpu_timeline.sh --case 6 --iterations 5 --warmup 3
+    .venv/bin/python3 profiling/gpu_timeline.py report \
+        profiling/traces/gpu_timeline.trace
+
+Step 1 drives `UserOptimizedTransformer` alone and puts one `mlx-forward`
+signpost around each forward pass. Step 2 reads three tables out of the trace:
+
+| Table | What it gives |
+|---|---|
+| `os-signpost` | the start and the stop of each `mlx-forward` window |
+| `metal-gpu-intervals` | one row for each command encoder the GPU ran, with a start and a duration in ns, for every process on the device |
+| `metal-gpu-state-intervals` | the Active and Idle state of the device itself |
+
+The report clips the encoder rows of the python process to each window, joins
+the overlaps, and splits the idle time three ways. The **head** is the time
+before the first kernel. The **tail** is the wait after the last one. The
+**inner** gaps are the only part that a kernel change can win.
+
+### The measurement
+
+Shape 6, 5 forward passes, 3 warmup passes, on a quiet machine.
+
+```
+  #  window ms   busy ms  head ms  inner ms  tail ms  inner %  gaps  active %
+  1    609.117   460.404  141.965     6.408    0.340     1.05   103     76.79
+  2    484.211   461.757   15.915     5.797    0.742     1.20   101     95.67
+  3    508.963   461.955   41.268     5.485    0.255     1.08   100     91.32
+  4    511.173   439.050   67.134     4.652    0.337     0.91    94     86.49
+  5    462.265   440.729   16.607     4.679    0.250     1.01   101     95.71
+```
+
+**The inner idle is 1.05% and it does not move.** Five windows give 1.05,
+1.20, 1.08, 0.91 and 1.01 percent, while the head varies by a factor of nine.
+
+### Where the inner idle sits
+
+The inner gaps are not spread over the 100 encoders. They are 9 or 10 large
+gaps and about 90 tiny ones.
+
+| Window | encoders | gaps over 0.3 ms | they hold | all inner gaps |
+|---:|---:|---:|---:|---:|
+| 1 | 104 | 10 | 5.251 ms | 6.408 ms |
+| 2 | 102 | 10 | 5.088 ms | 5.797 ms |
+| 3 | 101 | 9 | 4.553 ms | 5.485 ms |
+| 4 | 95 | 10 | 4.338 ms | 4.652 ms |
+| 5 | 102 | 9 | 3.601 ms | 4.679 ms |
+
+**Shape 6 runs exactly 10 chunks.** `CHUNK_ACTIVATION_BYTES` picks
+`chunk = 1024` and the batch is 10000, so `forward()` loops 10 times and calls
+`mx.eval(part)` at the end of each one. The count of large gaps matches the
+count of chunks, window for window. So those gaps are the chunk boundary.
+They are the `mx.eval` round trip, and the loop needs it: it is what keeps
+one chunk of intermediates live instead of ten.
+
+Everything that is left is the launch cost between two encoders inside one
+chunk. **90 gaps under 0.05 ms hold 0.269 ms of a 462 ms window, which is
+0.06%.**
+
+### What this rules out
+
+A persistent kernel keeps a layer resident so that consecutive kernels do not
+give the GPU back. Its whole prize here is 0.06%. That is 17 times under the
+1% noise floor of a sweep, so no build can even be measured, let alone won.
+
+The same number rules out every other member of the class: a kernel graph, a
+wider `mx.compile` region, a manual command buffer, an encoder merge. They all
+attack the same 0.269 ms.
+
+### The head gap is not this row's target
+
+The head is 15.9 ms in the two clean windows, which agrees with the 13.951 ms
+that row 48 measured for `_to_mlx` at shape 6. It is a CPU copy of the 655 MiB
+input, and the GPU has nothing to run while it happens. **Row 48 already tried
+to hide it and lost at 0.974x**, because unified memory makes the copy and the
+kernels contend for one memory system.
+
+Windows 1, 3 and 4 read 141.965, 41.268 and 67.134 ms at the head. That is not
+the steady state. It is first touch on freshly mapped pages, and it decays over
+the run. Take the head from window 2 or window 5, and treat a single trace as
+one reading.
+
+### What it costs to reproduce
+
+28 s of wall time for the recording, and about 60 s for the report, which
+runs `xctrace export` three times. The trace is written to
+`profiling/traces/gpu_timeline.trace`.
+
+## 53. Fuse the attention and the out projection into one kernel — RULED OUT
+
+Not built. The budget decides it, and the budget takes minutes.
+
+    .venv/bin/python3 profiling/attn_out_budget.py
+
+### The shape of the kernel
+
+The attention writes `context` to DRAM and `attn_out` reads it straight back.
+A fused kernel keeps `context` in threadgroup memory and projects it there:
+
+    phase 1   for each head: O_h = softmax(Q K^T) V   -> threadgroup
+    phase 2   out = context @ W_o + b_o               -> device
+
+The out projection mixes every head, because `context` is the concatenation of
+all of them. **So one threadgroup must own `bq` query rows over the full
+`d_model`**, and it must run every head for those rows itself.
+
+### What one threadgroup must hold
+
+| Buffer | Why it is there | Shape 6 |
+|---|---|---:|
+| `O_tgp`, `bq x (d_model + pad)` | the concatenated output. `BlockMMA::mma()` reads its A operand from threadgroup memory, as row 44 checked | **16.50 KiB** |
+| `Q_smem`, `bq x (head_dim + pad)` | phase 1, one head at a time | 4.50 KiB |
+| `KV_smem` | phase 1, one head at a time | 4.50 KiB |
+| `Bs_o`, `bk_o x (d_model + pad)` | phase 2. `bn_o = d_model`, because the row is whole and there is one N tile | 4.12 KiB at `bk_o = 8` |
+
+Phase 2 reads neither `Q_smem` nor `KV_smem`, so `Bs_o` can alias them. Metal
+does not alias two declarations, so that needs one flat buffer, manual offsets
+and a barrier between the phases.
+
+| | shape 6 | Metal gives |
+|---|---:|---:|
+| aliased peak | **25.50 KiB** | 32.0 KiB |
+| plain sum | **29.62 KiB** | 32.0 KiB |
+| the steel attention kernel today | **9.00 KiB** | |
+
+### Why that is a stop
+
+Row 44 built a kernel with the same structure, on the same machine, and swept
+it. Its controlled pair changed nothing but the threadgroup size:
+
+| threadgroup | best ratio |
+|---:|---:|
+| 24.0 KiB | 0.996x |
+| 29.0 KiB | 0.896x |
+
+**25.50 KiB sits inside that band**, and 29.62 KiB is row 44's own losing
+point. The aliasing is the only thing that keeps the budget under 26 KiB, and
+it buys 4.12 KiB for a barrier and a hand-offset buffer.
+
+The mechanism row 44 named is occupancy: threadgroup memory limits how many
+threadgroups stay resident on a core. This kernel asks for **2.8x** what the
+attention kernel uses today.
+
+Read the interpolated 0.966x as an indication and nothing more. Row 44 holds
+two points, and they come from a GEMM chain, not from attention. The facts that
+do not need interpolation are the three numbers above: 25.50, 29.62 and 9.00.
+
+### The prize is the same prize row 44 lost
+
+At the shape 6 chunk, `context` is 131072 rows x 128 floats = 64 MiB, so the
+round trip is **128 MiB**, or 1.119 ms of a 12.0 ms layer at 119.9 GB/s. That
+is 9.3%.
+
+Row 44's `hidden` round trip at the same chunk is **also 128 MiB**, also about
+1.1 ms of the same 12.0 ms layer. So this row would spend more threadgroup
+memory than row 44 did, to win the same number row 44 could not keep.
+
+### It does not even reach the whole model
+
+| Shape | aliased peak | fits |
+|---:|---:|---|
+| 1-6, 12, 13 (`d_model` 128, 4 heads) | 25.50 KiB | yes |
+| 7 (`d_model` 32) | 7.50 KiB | yes |
+| 11 (16 heads, `head_dim` 8) | 20.62 KiB | yes |
+| 10 (2 heads, `head_dim` 64) | 34.00 KiB | **no** |
+| 9 (1 head, `head_dim` 128) | 51.00 KiB | **no** |
+| 8 (`d_model` 1024) | 197.00 KiB | **no** |
+
+Shape 8 carries 21.3% of the FLOP weight and cannot take it. A wide head makes
+both `KV_smem` and `O_tgp` grow, so the fusion is worst exactly where the
+activation is largest.
+
+### What would reopen it
+
+A way to project the attention output without holding a whole row. There is
+none: the projection is a contraction over `d_model`, and `d_model` is the head
+concatenation. Splitting it needs a partial sum in DRAM, which is the round
+trip again.
+
+## 54. Re-sweep the steel GEMM tile, with the row 46 and row 47 epilogues on — REVERTED
+
+`_TILES` in `steel_gemm.py` was ordered by a sweep of a PLAIN GEMM. Two
+epilogues arrived after it, and neither row re-swept the tile:
+
+- **Row 46** puts the LayerNorm in the epilogue of `qkv proj` and `ffn_in`.
+  It reads two floats for the row and two `(N,)` vectors.
+- **Row 47** puts the row statistics in the epilogue of `out proj` and
+  `ffn_out`. It writes `wn * (N / bn)` partial planes.
+
+Row 47 gives a clear reason to expect `bn = 128` to win: at N = 128 a
+`bn64 wn2` tile writes 4 partial planes and a `bn128 wn2` tile writes 2.
+
+    .venv/bin/python3 profiling/tile_resweep.py --grid full --stages ffn_in
+    .venv/bin/python3 profiling/tile_resweep.py --grid coarse
+
+### The method
+
+Every stage runs at the shape 6 chunk: M = 131072, K = 128. The grid is
+`bm` in {16, 32, 64}, `bn` in {32, 64, 128}, `bk` in {8, 16, 32} and
+`(wm, wn)` in {2x2, 4x1, 1x4, 4x2, 2x4}, filtered by divisibility,
+`fits_threadgroup()` and row 51's `loader_geometry_ok()`. That leaves 129
+tiles for each stage.
+
+**A plain sweep cannot score these tiles.** The first attempt read
+`64x32x16x2x2` at 1.172x on `ffn_in`, and a paired run put the same tile at
+1.008x. The machine drifted inside one process: an early reading of the tile
+in use gave 2.0771 ms and a later one gave 1.9488 ms, which is 6.6%. So the
+script runs BOTH tiles on every repeat and swaps the order on every other
+one, exactly as `plan_ab.py` does for a plan field.
+
+### The result
+
+| Stage | epilogue | best of 129 | today |
+|---|---|---|---|
+| `qkv proj` N=384 | row 46 | `32x64x16x1x4` **0.997x** | is the best |
+| `ffn_in` N=128 | row 46 | `32x64x16x1x4` **1.007x** | 0.7% behind |
+| `out proj` N=128 | row 47 | `32x64x32x2x2` **1.012x to 1.025x** | 1 to 2% behind |
+| `ffn_out` N=128 | row 47 | `32x64x32x2x2` **0.979x to 1.030x** | tied |
+
+**The `bn = 128` hypothesis is refuted.** A `bn128` tile reached the top of no
+stage. The one candidate that repeats on the row 47 stages is `bk = 32`, not
+`bn = 128`, and it does not clear the floor.
+
+### The noise floor of this A/B
+
+Today's tile is in the grid, so it pairs against itself and gives a null
+control. Over the runs it read **0.976x, 0.981x, 0.982x, 0.987x, 0.989x,
+0.991x, 0.997x, 1.007x and 1.009x**. So the floor is about **1.5%**, and only
+an effect above that is real.
+
+By that floor:
+
+- `32x64x32x2x2` on `out proj` sits at the top of the band, not above it.
+- `32x64x32x2x2` on `ffn_out` sits inside it. One run read 1.030x and the next
+  read 0.979x.
+- `64x32x16x4x1` on `ffn_in` read **1.127x** once and then 0.976x, 0.997x and
+  0.993x at 60 paired repeats. The 1.127x was its partner's slow reading, not
+  its own fast one. **Do not trust a single pair.**
+
+### The one real effect, and why it is not worth taking
+
+`32x64x16x1x4` on `ffn_in` read **1.007x, 1.008x and 1.008x** over three runs
+of 60 paired repeats. A 0.1 pp spread over three runs is not noise. It is also
+0.7% of a stage that is about 15% of the shape 6 layer, so it is **0.1% of
+shape 6 and 0.07% FLOP-weighted**. A sweep cannot see it, so it cannot be
+confirmed at the model level.
+
+`_TILES` is one ordered list, and all four consumers and all 13 shapes read
+it. Reordering it to take 0.07% moves every shape. Giving the row 47 stages
+their own list to take 0.2% adds a second chooser. Neither buys a number a
+sweep can measure.
+
+**So `_TILES` does not change.** The value of this row is the negative: the
+tile is not where the remaining time is.

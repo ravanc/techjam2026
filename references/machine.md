@@ -21,7 +21,14 @@ Read these values again with:
 
 The memory is unified. A torch CPU tensor and an MLX GPU array use the same
 physical DRAM. A "transfer" is therefore a copy inside one memory, not a bus
-transfer. This is why the framework boundary costs under 1% of a call.
+transfer.
+
+**A copy is still not free.** An earlier version of this file said the
+framework boundary costs under 1% of a call. That is wrong. `_to_mlx` copies
+the 655 MiB shape 6 input on the CPU, and the GPU sits idle for **15.9 ms of a
+462 ms call, which is 3.4%** (row 52, read off the Metal timeline). Row 48
+measured the whole boundary at 5.4% of shape 6. Unified memory removes the bus,
+not the bytes.
 
 **The 12.0 GiB working set is the hard limit.** It is not the 18 GiB of
 system memory. Any shape that needs more than 12 GiB of live GPU arrays must

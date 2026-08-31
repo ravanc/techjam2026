@@ -3,7 +3,7 @@
 This guide tells you how to find slow code and how to make it faster.
 For the setup steps and the platform problems, read `README.md`.
 
-## The four tools
+## The five tools
 
 ### 1. The timeline — find the slow model
 
@@ -134,7 +134,36 @@ bandwidth roof.
 So an elementwise stage cannot get faster from a better kernel. It can only
 get faster from a kernel that moves fewer bytes.
 
-### 4. Your own labels — find the slow layer
+### 4. The GPU gap report — find out if the GPU waits
+
+```
+./profiling/gpu_timeline.sh --case 6 --iterations 5
+.venv/bin/python3 profiling/gpu_timeline.py report \
+    profiling/traces/gpu_timeline.trace
+```
+
+Tool 2 needs Xcode. This one does not. It records the same `Metal System
+Trace` and reads it with `xctrace export`, so it prints in the terminal.
+
+It puts one `mlx-forward` signpost around each forward pass, clips the GPU
+encoder intervals of the process to that window, and splits the idle time
+three ways:
+
+| Column | What it is |
+|---|---|
+| `head` | the CPU work before the first kernel. The `_to_mlx` input copy |
+| `inner` | the gaps between two kernels. The only part a kernel change can win |
+| `tail` | the wait after the last kernel |
+
+Use it before you build anything that claims to remove a launch cost or a
+stall. It gives the size of the prize first. Row 52 used it to rule out the
+persistent kernel: the inner idle at shape 6 is 1.05%, 10 chunk boundaries
+hold all of it, and the 90 launch gaps together hold 0.06%.
+
+Read `head` from a late window. The first windows pay first touch, and the
+head decayed from 141.965 ms to 15.9 ms over five passes in one run.
+
+### 5. Your own labels — find the slow layer
 
 ```python
 import sys; sys.path.insert(0, "profiling")
@@ -153,10 +182,11 @@ Do these steps in this order:
 
 1. Run `trace.sh` and `summarize.py`. Find the slow model.
 2. Put signposts in that model. Run again. Find the slow layer.
-3. Capture a `.gputrace` file. Open it in Xcode. Find the slow kernel.
-4. Read the shader profiler. Decide if the kernel is memory-bound or math-bound.
-5. Change the code.
-6. Do step 1 again. Make sure the time decreased.
+3. Run `gpu_timeline.sh`. Find out if the GPU waits, and where.
+4. Capture a `.gputrace` file. Open it in Xcode. Find the slow kernel.
+5. Read the shader profiler. Decide if the kernel is memory-bound or math-bound.
+6. Change the code.
+7. Do step 1 again. Make sure the time decreased.
 
 ## A small shape needs an A/B, not two sweeps
 

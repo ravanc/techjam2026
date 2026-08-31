@@ -728,6 +728,12 @@ def fits_threadgroup(bm: int, bn: int, bk: int, transpose_a: bool,
 #
 # So a full row tile (bn = N) is FREE on those two GEMMs, and it is not free
 # on `ffn_in`. A full row tile lets one threadgroup own a whole output row.
+#
+# ROW 54 RE-SWEPT THIS ORDER WITH THE ROW 46 AND ROW 47 EPILOGUES ON, and it
+# holds. 129 tiles on each of the four shape 6 stages, each paired against the
+# tile in use and alternated every repeat (`profiling/tile_resweep.py`). The
+# best candidate is 0.997x on `qkv proj` and 1.007x on `ffn_in`, and the null
+# control moves 1.5%. Do not re-sweep it again without a new epilogue.
 _TILES = [
     (32, 64, 16, 2, 2),
     (64, 32, 16, 2, 2),

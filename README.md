@@ -173,6 +173,7 @@ what each turn measured.
 | `bench_cases.py` | Deterministic input generation, shared by every backend |
 | `test_backends.py` | Cross-backend comparison: CPU, MPS, MLX |
 | `test_padding.py` | Padded and ragged batches, including an empty sample |
+| `test_paths.py` | The dispatch paths of the 14 shapes: the plan, an A/B against an all-off plan, and the kernel units. 18 s |
 | `profiling/WORKFLOW.md` | How to find the next optimization. Read it first |
 | `profiling/stage_roofline.py` | Splits one block into stages and names each limit |
 | `profiling/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel |
@@ -180,6 +181,9 @@ what each turn measured.
 | `profiling/ln_absorb_probe.py` | The accuracy screen for row 46, against a float64 reference |
 | `profiling/ln_tiled_stats_probe.py` | The accuracy screen for row 47: a tiled reduction against a float64 reference |
 | `profiling/plan_ab.py` | A/B one `KernelPlan` field in one process, interleaved. Use it on a shape under 2 ms, where a sweep cannot decide |
+| `profiling/attn_out_budget.py` | Threadgroup budget of a fused attention -> out projection. Row 53 ruled it out on paper |
+| `profiling/tile_resweep.py` | Re-sweeps the steel GEMM tile with the epilogues on, paired against the tile in use. Row 54 |
+| `profiling/gpu_timeline.py` | GPU idle read off the Metal timeline, in the terminal. Splits it into head, inner and tail. Row 52 |
 | `profiling/pipeline_probe.py` | Whether the framework boundary can hide behind the GPU. It cannot: unified memory makes the two contend. Row 48 |
 | `agent_loop.md` | The optimization loop: the screens, the four gates, and the run log |
 | `references/` | Measured facts: the machine, the shapes, the MLX kernels, the scoreboard |
@@ -188,6 +192,7 @@ what each turn measured.
 
     .venv/bin/python3 torch_transformer_benchmark.py     # the harness
     .venv/bin/python3 test_padding.py                    # padded batches
+    .venv/bin/python3 test_paths.py                      # the dispatch paths
     .venv/bin/python3 scoreboard.py --cpu-cache --label "..."   # the full sweep
     .venv/bin/python3 profiling/stage_roofline.py --shapes 6
 
