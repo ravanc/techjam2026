@@ -28,9 +28,9 @@ at the sizes and the tiles that the 13 shapes select.
 
 Run it:
 
-    .venv/bin/python3 test_paths.py                    # every layer, 18 s
-    .venv/bin/python3 test_paths.py --layer 1          # the plan alone
-    .venv/bin/python3 test_paths.py --layer 2 --shape 6  # one shape
+    .venv/bin/python3 tests/test_paths.py                    # every layer, 18 s
+    .venv/bin/python3 tests/test_paths.py --layer 1          # the plan alone
+    .venv/bin/python3 tests/test_paths.py --layer 2 --shape 6  # one shape
 
 WHAT L2 COVERS ON A PADDED BATCH
 
@@ -52,20 +52,25 @@ import gc
 from dataclasses import fields, replace
 from typing import Dict, List
 
-import mlx.core as mx
-import mlx.nn as mlx_nn
-import torch
+import os
+import sys
 
-from appendix_cases import APPENDIX_SHAPES, SHAPES_BY_ID
-from fast_layernorm import layer_norm_stats
-from steel_gemm import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import mlx.core as mx  # noqa: E402
+import mlx.nn as mlx_nn  # noqa: E402
+import torch  # noqa: E402
+
+from appendix_cases import APPENDIX_SHAPES, SHAPES_BY_ID  # noqa: E402
+from fast_layernorm import layer_norm_stats  # noqa: E402
+from steel_gemm import (  # noqa: E402
     choose_final_ln_tile,
     choose_tile,
     layer_norm_constants,
     row_stats_reduce,
     steel_addmm,
 )
-from torch_transformer_benchmark import (
+from torch_transformer_benchmark import (  # noqa: E402
     LAYER_NORM_EPS,
     BaselineTransformer,
     UserOptimizedTransformer,

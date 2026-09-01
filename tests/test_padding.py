@@ -20,7 +20,7 @@ Two tests run:
 
 Run it:
 
-    .venv/bin/python3 test_padding.py
+    .venv/bin/python3 tests/test_padding.py
 """
 
 from __future__ import annotations
@@ -30,10 +30,15 @@ import inspect
 import textwrap
 from typing import Dict, List, Tuple
 
-import torch
+import os
+import sys
 
-import torch_transformer_benchmark as tb
-from torch_transformer_benchmark import (
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import torch  # noqa: E402
+
+import torch_transformer_benchmark as tb  # noqa: E402
+from torch_transformer_benchmark import (  # noqa: E402
     BaselineTransformer,
     TransformerConfig,
     UserOptimizedTransformer,

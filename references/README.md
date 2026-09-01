@@ -30,6 +30,8 @@ Rules for this directory:
 | [../OPTIMIZATIONS.md](../OPTIMIZATIONS.md) | Every optimization tried, kept or reverted, with numbers |
 | [../profiling/README.md](../profiling/README.md) | Instruments and Metal capture setup, and the platform quirks |
 | [../profiling/WORKFLOW.md](../profiling/WORKFLOW.md) | How to use the profiler to find the next optimization |
+| [../docs/agent_loop.md](../docs/agent_loop.md) | The method and the queue of the optimization loop |
+| [../docs/chat-logs.html](../docs/chat-logs.html) | Every chat of the project, as one page |
 
 ## Code map
 
@@ -43,6 +45,8 @@ Rules for this directory:
 | `flops.py` | The FLOP model, and the matmul rates measured here. |
 | `scoreboard.py` | The graded run: CPU/MPS/MLX timing for every shape. Writes `scoreboard.md` and appends `profiling/results/history.jsonl`. |
 | `steel_attention.py` | MLX's own flash attention kernel, compiled at a `head_dim` MLX does not ship. Row 25. |
+| `tests/test_paths.py` | The kernel plan of every shape, and each custom kernel path on its own. |
+| `tests/test_padding.py` | The padded batch and the ragged batch. The sweep never runs one. Rows 27 and 28. |
 | `fast_layernorm.py` | A single-pass LayerNorm kernel for a row width under 256. Row 31. |
 | `profiling/probes/sdpa_dispatch.py` | Finds which `head_dim` values reach the fused SDPA kernel, and when a pad into that set pays. |
 | `profiling/probes/stage_roofline.py` | Splits one block into stages, times each, and names the limit: compute, IO or launch. Its `ln1 stats` and `ln2 stats` rows are stale since row 47. |

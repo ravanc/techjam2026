@@ -4,7 +4,7 @@ A loop that finds an optimization, builds it, measures it, and keeps it or
 drops it. It copies the framework in "Agentic Kernels in Production"
 (Baseten, 28 August 2026) and applies it to `UserOptimizedTransformer`.
 
-Read [OPTIMIZATIONS.md](OPTIMIZATIONS.md) first. That file holds the status
+Read [OPTIMIZATIONS.md](../OPTIMIZATIONS.md) first. That file holds the status
 of every optimization. This file holds the **method** and the **queue**.
 
 ## Why this file exists
@@ -55,7 +55,7 @@ A candidate becomes KEPT only when it passes all four. No exception.
 | Gate | Command | Pass condition |
 |---|---|---|
 | 1. Accuracy | `scoreboard.py` accuracy table | 13 of 13 PASS at `atol=0.002`, `rtol=0.02` |
-| 2. Padding | `.venv/bin/python3 test_padding.py` | 18 of 18 pass |
+| 2. Padding | `.venv/bin/python3 tests/test_padding.py` | 18 of 18 pass |
 | 3. End to end | `scoreboard.py --cpu-cache --label "..."` | the **MLX ms** column drops, FLOP weighted |
 | 4. Control | the same sweep | MPS moves under 1%, and a shape the change cannot touch holds at 1.00x |
 

@@ -701,7 +701,7 @@ this.
 | Tool | Use |
 |---|---|
 | `test_backends.py` | The three backends, side by side. Writes the JSON above. |
-| `test_padding.py` | The padded batch. The sweep never runs one. Rows 27 and 28. |
+| `tests/test_padding.py` | The padded batch. The sweep never runs one. Rows 27 and 28. |
 | `appendix_cases.py` | Appendix 3.7 shapes 1 to 13. `--cases 1,7-9 --run`. |
 | `shape14_harness.py` | Appendix 3.7 shape 14, and nothing else. Row 55. |
 | `profiling/` | Instruments traces and Metal GPU captures. See its README. |
@@ -2452,7 +2452,7 @@ weight, and an epilogue that reads two floats for the row:
 So the LayerNorm needs **no prologue at all**. It becomes an epilogue, and
 row 33 already owns that epilogue in `steel_gemm.py`. This is the article's
 optimization #1 (move the constant work to load time) applied to its
-optimization #3 (fuse the norm into the next kernel). See `agent_loop.md`.
+optimization #3 (fuse the norm into the next kernel). See `docs/agent_loop.md`.
 
 **The open risk was accuracy, not speed. It is now measured, and it passes.**
 

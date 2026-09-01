@@ -91,7 +91,7 @@ python3 -m venv .venv
 Run the quick path tests to check that the installation and custom kernels work:
 
 ```bash
-.venv/bin/python3 test_paths.py
+.venv/bin/python3 tests/test_paths.py
 ```
 
 The custom kernels use Metal headers included with MLX. If these headers cannot be found, the custom paths disable themselves and the model falls back to standard MLX operations rather than failing.
@@ -101,7 +101,7 @@ The custom kernels use Metal headers included with MLX. If these headers cannot 
 ### 1. Check correctness and kernel dispatch
 
 ```bash
-.venv/bin/python3 test_paths.py
+.venv/bin/python3 tests/test_paths.py
 ```
 
 This checks that the benchmark shapes select the expected kernel plans and tests the individual custom kernel paths.
@@ -109,7 +109,7 @@ This checks that the benchmark shapes select the expected kernel plans and tests
 For padded and ragged inputs:
 
 ```bash
-.venv/bin/python3 test_padding.py
+.venv/bin/python3 tests/test_padding.py
 ```
 
 This runs 18 additional cases, including padded batches, ragged batches, and an empty sample.
@@ -149,6 +149,23 @@ Avoid running other GPU-heavy applications or benchmark processes at the same ti
 
 Short benchmark runs can also produce misleading medians, so the default repeat counts should be used when reporting performance.
 
+## Repository layout
+
+The benchmark harness imports the kernel modules by their plain name, so those
+files stay at the top level.
+
+| Path | Holds |
+|---|---|
+| `torch_transformer_benchmark.py` | The baseline model, the optimized model, and the provided harness |
+| `steel_attention.py`, `steel_gemm.py`, `fast_layernorm.py`, `mlx_kernels.py` | The custom Metal kernels and the MLX bindings |
+| `appendix_cases.py`, `bench_cases.py`, `test_backends.py`, `flops.py` | The shapes, the inputs, the three backends, and the FLOP model |
+| `demo.py`, `scoreboard.py`, `shape14_harness.py` | The entry points: the visual run, the graded sweep, and shape 14 |
+| `tests/` | The correctness tests: the kernel plans, and the padded batch |
+| `docs/` | The optimization loop, and the chat logs of the project |
+| `references/` | Measured facts: the shapes, the machine, the MLX kernels, and the figures |
+| `profiling/` | The probes, the Instruments tools, and every recorded result |
+| `OPTIMIZATIONS.md` | Every optimization tried, kept or reverted, with its number |
+
 ## Limitations and future improvements
 
 ### The kernel plan is tuned for one machine
@@ -174,5 +191,7 @@ The biggest limitation was that a plausible AI explanation was not necessarily t
 One example was Q, K and V layout. We initially suspected that strided memory access was slowing attention and tried making the tensors contiguous. The improvement was effectively noise. Further profiling revealed that the custom Steel kernel was already making hidden contiguous copies internally. The eventual optimization was the opposite: remove those copies and pass the real tensor strides directly to the kernel.
 
 This shaped our workflow: **AI suggestions were hypotheses, not conclusions**. An optimization was only kept after profiling supported its mechanism, the correctness tests passed, and controlled benchmarks showed an actual improvement.
+
+## Future Developments
 
 With more time, we would push this towards autonomous kernel optimization: specialized agents could independently investigate memory layout, fusion, mathematical transformations, and GPU-specific kernels, while a deterministic benchmark and correctness harness decides what gets kept. The optimization log would act as shared memory so that agents do not repeatedly rediscover approaches that have already failed.
