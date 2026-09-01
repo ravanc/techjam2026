@@ -80,6 +80,8 @@ Status:
 | 54 | Re-sweep the steel GEMM tile, with the row 46 and row 47 epilogues on | **REVERTED** | `profiling/probes/tile_resweep.py`, `_TILES` unchanged | — | 129 tiles on each of the four shape 6 GEMM stages, each one paired against today's tile and alternated every repeat. **No tile wins.** `qkv proj` and `ffn_in` already run their best tile: the top candidate over 129 is 0.997x and 1.007x. The two row 47 stages prefer `32x64x32x2x2`, but `out proj` reads 1.025x, 1.018x and 1.012x and `ffn_out` reads 1.030x, 0.979x and 1.006x, while the null control (today against today) moves 0.976x to 1.009x. **The `bn = 128` hypothesis is refuted**: a `bn128` tile never reached the top of any stage. The largest reproducible effect is `32x64x16x1x4` on `ffn_in` at 1.007x, 1.008x and 1.008x, which is **0.07% FLOP-weighted** |
 | 55 | Run appendix shape 14 through a separate harness | **KEPT** | `shape14_harness.py`. `UserOptimizedTransformer` is UNCHANGED | shape 14 only (B=32, D=1024, H=16, S=100000, L=2) | **the shape runs: 504.5 s for the full batch, 15.766 s median per row, 2.758 executed TFLOP/s, 55.8% executed MFU.** No speedup: the CPU and MPS baselines cannot run at all, so there is no time to divide by. Accuracy PASSes by two checks that need no full-shape baseline. `plan_kernels()` needed no change |
 
+| 56 | Run the hoisted steel kernel at a `head_dim` that MLX already ships | **REVERTED** | `profiling/probes/steel_gate_ab.py`, not in the model | — | all 13 shapes tested. Only shape 10 (`head_dim` 64) can run it, and it gives **0.9969x and 1.0023x** in two harnesses, with a **bit exact** output (`max_abs` 0.00e+00). Ten null controls span 0.9920x to 1.0106x, so that is a tie. `head_dim` 128 (shape 9) needs 35328 bytes of threadgroup memory against a 32768 byte limit, and `head_dim` 256 (shape 8) crashes the Metal compiler. So the `head_dim not in SDPA_FUSED_HEAD_DIMS` gate costs nothing |
+
 Line numbers are in `torch_transformer_benchmark.py`.
 
 ## Test conditions
@@ -3794,3 +3796,61 @@ full 2x.
 - The graded sweep does not include shape 14, and it should not. Shape 14
   runs a different harness and it reports no speedup. Its reading lives in
   `profiling/results/shape14.json`, not in `scoreboard.json`.
+
+## 56. Run the hoisted steel kernel at a `head_dim` that MLX already ships — REVERTED
+
+`plan_kernels()` sets `use_steel` only when `head_dim` is NOT in
+`SDPA_FUSED_HEAD_DIMS`. That gate was never measured. It looked like a
+self-imposed limit, so this row measures it on every shape.
+
+    .venv/bin/python3 profiling/probes/steel_gate_ab.py
+
+The probe forces `steel_attention=True` and compares it against the plan the
+model uses today. It alternates the order each round, and it scales the
+repeat count to a fixed time budget so shape 6 does not hold the GPU for an
+hour.
+
+| # | shape | today | steel ON | ratio | rep | note |
+|---:|---|---:|---:|---:|---:|---|
+| 1 | B64 D128 H4 S128 d32 | 3.2986 | 3.2957 | 1.0009x | 200 | null control |
+| 2 | B1 D128 H4 S128 d32 | 0.6420 | 0.6352 | 1.0106x | 200 | null control |
+| 3 | B4 D128 H4 S128 d32 | 0.6405 | 0.6405 | 0.9999x | 200 | null control |
+| 4 | B16 D128 H4 S128 d32 | 1.1710 | 1.1774 | 0.9945x | 200 | null control |
+| 5 | B128 D128 H4 S128 d32 | 6.0040 | 6.0099 | 0.9990x | 200 | null control |
+| 6 | B10000 D128 H4 S128 d32 | 438.3869 | 438.4211 | 0.9999x | 5 | null control |
+| 7 | B64 D32 H4 S128 d8 | 1.0656 | 1.0610 | 1.0043x | 200 | null control |
+| 8 | B64 D1024 H4 S128 d256 | — | — | — | — | **steel ON fails to compile** |
+| 9 | B64 D128 H1 S128 d128 | — | — | — | — | **steel ON fails to compile** |
+| 10 | B64 D128 H2 S128 d64 | 3.3739 | 3.3845 | **0.9969x** | 200 | **the real test** |
+| 11 | B64 D128 H16 S128 d8 | 3.4517 | 3.4591 | 0.9979x | 200 | null control |
+| 12 | B64 D128 H4 S32 d32 | 1.2091 | 1.2115 | 0.9981x | 200 | null control |
+| 13 | B64 D128 H4 S1024 d32 | 37.7607 | 38.0637 | 0.9920x | 37 | null control |
+
+**Read the null controls first.** Ten shapes already run the steel kernel, so
+ON and OFF are the same code there. They span 0.9920x to 1.0106x. That is the
+noise floor of this probe, and it is about 1%.
+
+**Shape 10 is the only real test that runs.** It reads 0.9969x here, and
+1.0023x in the interleaved `plan_ab.py` harness (200 repeats, 5 rounds,
+3.3925 ms against 3.3846 ms). A whole-model A/B over 3 runs gave 0.974x,
+1.010x and 0.999x. Every reading is inside the noise floor.
+
+The two outputs are **bit exact**: `max_abs = 0.00e+00`. That is the
+explanation. MLX compiles `steel_attention.h` at `BD=64` with `BQ=32, BK=32`,
+and `steel_attention.py` compiles the same file at the same block shape. The
+GPU runs the same instructions. Only the dispatch differs, and the dispatch
+is not the cost.
+
+**The other two widths cannot run it.** Shape 9 (`head_dim` 128) stops with:
+
+    Threadgroup memory size (35328) exceeds the maximum threadgroup
+    memory allowed (32768)
+
+Shape 8 (`head_dim` 256) needs 68.5 KiB and stops earlier still, with
+`Compiler encountered an internal error`. `supports()` returns False for both
+widths, so the gate under test never reaches either shape. This confirms
+limit 3 of row 25.
+
+**So the gate stays.** It costs nothing at `head_dim` 64, and it is not the
+binding condition at 128 or 256. Widening the steel path to every shape gains
+nothing, and it adds a JIT compile at the first call.
