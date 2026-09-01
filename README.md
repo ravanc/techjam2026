@@ -166,13 +166,11 @@ files stay at the top level.
 | `profiling/` | The probes, the Instruments tools, and every recorded result |
 | `OPTIMIZATIONS.md` | Every optimization tried, kept or reverted, with its number |
 
-## Limitations and future improvements
+## Limitations
 
 ### The kernel plan is tuned for one machine
 
 The dispatch thresholds and tile choices were measured on an M3 Pro with 14 GPU cores. The implementation remains correct on other compatible Apple Silicon machines, but the choices we found for this GPU will not necessarily be optimal on an M4, M4 Max, or another Apple GPU.
-
-Given more time, we would replace more of these fixed thresholds with an autotuner that benchmarks candidate kernels on first use and caches the resulting plan for the current GPU.
 
 ### The project optimizes the float32 forward pass
 
@@ -195,3 +193,5 @@ This shaped our workflow: **AI suggestions were hypotheses, not conclusions**. A
 ## Future Developments
 
 With more time, we would push this towards autonomous kernel optimization: specialized agents could independently investigate memory layout, fusion, mathematical transformations, and GPU-specific kernels, while a deterministic benchmark and correctness harness decides what gets kept. The optimization log would act as shared memory so that agents do not repeatedly rediscover approaches that have already failed.
+
+We would also replace the fixed dispatch thresholds and tile choices with an autotuner. The autotuner benchmarks the candidate kernels on first use, and caches the resulting plan for the current GPU.
